@@ -222,7 +222,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
   <hr class="sep-dash"/>
 
-  <div class="row"><span>Subtotal</span><span>${money(venta.subtotal + venta.descuento)}</span></div>
+  <div class="row"><span>Subtotal</span><span>${money(venta.subtotal)}</span></div>
   ${descuentoLine}
   <div class="row"><span>IGV (18%)</span><span>${money(venta.igv)}</span></div>
 
@@ -344,7 +344,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
         {/* Subtotales */}
         <div className="space-y-0.5 text-ink-600">
-          <PreviewRow k="Subtotal" v={money(venta.subtotal + venta.descuento)} />
+          <PreviewRow k="Subtotal" v={money(venta.subtotal)} />
           {venta.descuento > 0 && (
             <PreviewRow k="Descuento" v={'- ' + money(venta.descuento)} />
           )}

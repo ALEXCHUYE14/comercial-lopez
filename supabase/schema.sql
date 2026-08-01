@@ -517,7 +517,15 @@ begin
                     when 'saco' then v_cantidad * coalesce(v_producto.kg_por_saco, 1)
                     else v_cantidad
                   end;
-    v_precio   := coalesce((v_item->>'precio_unitario')::numeric, v_producto.precio_venta);
+    -- El precio SIEMPRE se calcula en servidor a partir del producto y la
+    -- modalidad; nunca se confia en "precio_unitario" enviado por el cliente
+    -- (evita que un usuario autenticado cobre a un precio arbitrario llamando
+    -- al RPC directamente, por ejemplo desde devtools).
+    v_precio   := case v_modalidad
+                    when 'caja' then coalesce(v_producto.precio_venta_caja, v_producto.precio_venta)
+                    when 'saco' then coalesce(v_producto.precio_venta_saco, v_producto.precio_venta)
+                    else v_producto.precio_venta
+                  end;
 
     if v_producto.stock_actual < v_unidades then
       raise exception 'Stock insuficiente para "%": disponible % %, solicitado %',
@@ -555,7 +563,11 @@ begin
                      when 'saco' then v_cantidad * coalesce(v_producto.kg_por_saco, 1)
                      else v_cantidad
                    end;
-    v_precio    := coalesce((v_item->>'precio_unitario')::numeric, v_producto.precio_venta);
+    v_precio    := case v_modalidad
+                     when 'caja' then coalesce(v_producto.precio_venta_caja, v_producto.precio_venta)
+                     when 'saco' then coalesce(v_producto.precio_venta_saco, v_producto.precio_venta)
+                     else v_producto.precio_venta
+                   end;
     v_sub       := round(v_precio * v_cantidad, 2);
 
     insert into public.detalle_ventas (
@@ -605,6 +617,10 @@ declare
   v_prod  public.productos%rowtype;
   v_nuevo double precision;
 begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede ajustar el stock.';
+  end if;
+
   select * into v_prod from public.productos where id = p_producto_id for update;
   if not found then raise exception 'Producto no encontrado.'; end if;
 
@@ -695,7 +711,20 @@ returns void
 language plpgsql
 security definer set search_path = public
 as $$
+declare
+  v_caja public.cajas%rowtype;
 begin
+  select * into v_caja from public.cajas where id = p_caja_id for update;
+  if not found then
+    raise exception 'Caja no encontrada.';
+  end if;
+  if v_caja.estado <> 'abierta' then
+    raise exception 'La caja ya esta cerrada.';
+  end if;
+  if v_caja.cajero_id <> auth.uid() and not public.es_admin() then
+    raise exception 'No puedes modificar los totales de una caja ajena.';
+  end if;
+
   if p_metodo = 'efectivo' then
     update public.cajas set total_efectivo = total_efectivo + p_monto where id = p_caja_id;
   elsif p_metodo = 'yape' then

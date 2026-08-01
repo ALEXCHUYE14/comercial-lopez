@@ -147,17 +147,32 @@ export function POS() {
       })
       if (error) throw error
 
+      // A partir de aqui la venta ya quedo registrada y el stock descontado
+      // en el servidor: si algo falla despues NO se debe relanzar (el catch de
+      // abajo re-habilitaria "Confirmar cobro" y el cajero reintentaria,
+      // duplicando la venta). Cualquier error en los pasos siguientes solo se
+      // muestra como advertencia, sin deshacer el cobro ya completado.
+      let advertencia: string | null = null
+
       // Actualizar totales de la caja
       if (caja?.id) {
-        await sumarVenta(caja.id, metodo, carrito.totales.total)
+        try {
+          await sumarVenta(caja.id, metodo, carrito.totales.total)
+        } catch {
+          advertencia = 'La venta se registró, pero no se pudo actualizar el total de caja. Avisa al administrador.'
+        }
       }
 
       // Actualizar deuda del cliente si la venta es al fiado
       if (metodo === 'fiado' && clienteId) {
-        await supabase.rpc('registrar_cargo_fiado', {
-          p_cliente_id: clienteId,
-          p_monto: carrito.totales.total,
-        })
+        try {
+          await supabase.rpc('registrar_cargo_fiado', {
+            p_cliente_id: clienteId,
+            p_monto: carrito.totales.total,
+          })
+        } catch {
+          advertencia = 'La venta se registró, pero no se pudo cargar la deuda al cliente. Avisa al administrador.'
+        }
       }
 
       setItemsTicket(carrito.items)
@@ -165,7 +180,11 @@ export function POS() {
       carrito.limpiar()
       setPagoAbierto(false)
       setCarritoMovil(false)
-      toast.exito('Venta registrada correctamente')
+      if (advertencia) {
+        toast.error(advertencia)
+      } else {
+        toast.exito('Venta registrada correctamente')
+      }
     } catch (e) {
       const msg =
         e instanceof Error
