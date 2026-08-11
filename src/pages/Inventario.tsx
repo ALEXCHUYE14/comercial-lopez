@@ -9,6 +9,7 @@ import {
   PackageX,
   Trash2,
   Download,
+  ScanLine,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
 import { useAuth } from '@/context/AuthContext'
@@ -18,6 +19,7 @@ import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { ProductForm } from '@/components/inventory/ProductForm'
 import { StockAdjust } from '@/components/inventory/StockAdjust'
+import { ScanEntrada } from '@/components/inventory/ScanEntrada'
 import { money, cx, fechaHora, cantidad, etiquetaUnidad, ymd } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
 import type { MovimientoInventario, Producto } from '@/types/database'
@@ -31,6 +33,7 @@ export function Inventario() {
   const [formOpen, setFormOpen] = useState(false)
   const [editando, setEditando] = useState<Producto | null>(null)
   const [ajuste, setAjuste] = useState<Producto | null>(null)
+  const [escaneando, setEscaneando] = useState(false)
   const [kardex, setKardex] = useState<Producto | null>(null)
   const [eliminarConfirm, setEliminarConfirm] = useState<Producto | null>(null)
   const [eliminando, setEliminando] = useState(false)
@@ -120,6 +123,11 @@ export function Inventario() {
           <Button variant="outline" size="sm" onClick={exportarCSV} disabled={productos.length === 0}>
             <Download className="size-4" /> <span className="hidden sm:inline">Descargar</span>
           </Button>
+          {esAdmin && (
+            <Button variant="outline" size="sm" onClick={() => setEscaneando(true)}>
+              <ScanLine className="size-4" /> <span className="hidden sm:inline">Escanear</span>
+            </Button>
+          )}
           {esAdmin && (
             <Button variant="primary" onClick={abrirNuevo}>
               <Plus className="size-[18px]" /> <span className="hidden sm:inline">Nuevo producto</span>
@@ -326,6 +334,12 @@ export function Inventario() {
         open={!!ajuste}
         onClose={() => setAjuste(null)}
         producto={ajuste}
+        onListo={recargar}
+      />
+      <ScanEntrada
+        open={escaneando}
+        onClose={() => setEscaneando(false)}
+        productos={productos}
         onListo={recargar}
       />
       <KardexSheet producto={kardex} onClose={() => setKardex(null)} />
