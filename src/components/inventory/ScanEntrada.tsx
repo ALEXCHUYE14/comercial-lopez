@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { CheckCircle2, XCircle } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { CameraScanner } from '@/components/pos/CameraScanner'
+import { useKeyboardScanner } from '@/hooks/useKeyboardScanner'
 import { supabase } from '@/lib/supabase'
 import { cx } from '@/utils/format'
 import type { Producto } from '@/types/database'
@@ -30,6 +31,11 @@ interface Registro {
 export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
   const [registros, setRegistros] = useState<Registro[]>([])
   const procesando = useRef(new Set<string>())
+
+  // Lector fisico Bluetooth/USB (funciona igual en iPhone y Android: el
+  // telefono lo ve como un teclado externo) - alternativa 100% confiable
+  // cuando la lectura por camara falla por foco, lente o luz.
+  useKeyboardScanner(onScan)
 
   async function onScan(codigo: string) {
     // Evita doble envio si el usuario escanea muy rapido antes de que

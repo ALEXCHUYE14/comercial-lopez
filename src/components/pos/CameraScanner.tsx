@@ -1,10 +1,22 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
-import { CameraOff, Loader2, Keyboard } from 'lucide-react'
+import { CameraOff, Loader2, Keyboard, ZoomIn } from 'lucide-react'
 
 interface Props {
   onScan: (codigo: string) => void
   activo: boolean
+}
+
+// El zoom (PTZ) no esta en el tipo estandar de TS para MediaTrackCapabilities
+// / MediaTrackConstraintSet todavia, aunque varios navegadores ya lo soportan
+// como constraint "advanced". Se declara aparte en vez de "any" suelto.
+interface ZoomCapability {
+  min: number
+  max: number
+  step: number
+}
+interface CapacidadesConZoom extends MediaTrackCapabilities {
+  zoom?: ZoomCapability
 }
 
 // Lentes traseras de iPhone que NO queremos usar para leer codigos de barra:
@@ -53,6 +65,8 @@ export function CameraScanner({ onScan, activo }: Props) {
   const [mensajeError, setMensajeError] = useState<string>('')
   const [manualAbierto, setManualAbierto] = useState(false)
   const [manualCodigo, setManualCodigo] = useState('')
+  const [zoomCap, setZoomCap] = useState<ZoomCapability | null>(null)
+  const [zoom, setZoom] = useState(1)
 
   useEffect(() => {
     if (!activo) return
@@ -89,14 +103,20 @@ export function CameraScanner({ onScan, activo }: Props) {
         return { width: lado, height: Math.floor(lado * 0.62) }
       },
       aspectRatio: 1.2,
+      // Deja que el navegador use el detector de codigos de barra nativo
+      // (mas rapido y preciso) cuando esta disponible - hoy solo Chrome/
+      // Edge en Android. En Safari/iOS no existe, asi que ahi simplemente
+      // se ignora y sigue usando el decodificador JS (zxing) de siempre.
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
     }
 
     // En iPhone/Safari, si no se piden dimensiones explicitas la camara
     // trasera puede entregar un stream de baja resolucion, insuficiente para
     // decodificar codigos de barra 1D (EAN-13, UPC-A, etc. tienen barras muy
     // finas). Se pide con "ideal" (no "exact"/"min"): si el dispositivo no la
-    // soporta, el navegador entrega la mas cercana en vez de fallar.
-    const resolucion = { width: { ideal: 1920 }, height: { ideal: 1080 } }
+    // soporta, el navegador entrega la mas cercana en vez de fallar, nunca
+    // truena por pedir de mas.
+    const resolucion = { width: { ideal: 3840 }, height: { ideal: 2160 } }
 
     elegirCamaraTrasera().then((deviceId) => {
       if (cancelado) return
@@ -124,7 +144,22 @@ export function CameraScanner({ onScan, activo }: Props) {
             /* fallos de frame: silenciar */
           },
         )
-        .then(() => !cancelado && setEstado('activo'))
+        .then(() => {
+          if (cancelado) return
+          setEstado('activo')
+          // Zoom digital: en iPhone/Safari no hay forma de controlar el
+          // enfoque real desde la pagina (Apple no lo expone a la web), asi
+          // que si el usuario necesita alejarse para que la camara enfoque,
+          // el zoom digital permite acercar el codigo de barra igual sin
+          // tener que acercar el telefono. Se detecta si el dispositivo lo
+          // soporta; si no, el control simplemente no aparece.
+          try {
+            const caps = scanner.getRunningTrackCapabilities() as CapacidadesConZoom
+            if (caps.zoom) setZoomCap(caps.zoom)
+          } catch {
+            /* no soportado en este navegador: se omite el control de zoom */
+          }
+        })
         .catch((err: unknown) => {
           if (cancelado) return
           const nombre = err instanceof Error ? err.name : ''
@@ -143,6 +178,8 @@ export function CameraScanner({ onScan, activo }: Props) {
 
     return () => {
       cancelado = true
+      setZoomCap(null)
+      setZoom(1)
       const s = scannerRef.current
       if (s && s.isScanning) {
         s.stop()
@@ -151,6 +188,13 @@ export function CameraScanner({ onScan, activo }: Props) {
       }
     }
   }, [activo, onScan])
+
+  function cambiarZoom(valor: number) {
+    setZoom(valor)
+    scannerRef.current
+      ?.applyVideoConstraints({ advanced: [{ zoom: valor } as MediaTrackConstraintSet] })
+      .catch(() => {})
+  }
 
   function confirmarManual(e: FormEvent) {
     e.preventDefault()
@@ -193,6 +237,23 @@ export function CameraScanner({ onScan, activo }: Props) {
               <p className="text-sm font-medium">No se pudo acceder a la cámara.</p>
               <p className="text-xs text-white/60">{mensajeError}</p>
             </div>
+          </div>
+        )}
+
+        {/* Zoom digital: util cuando el telefono necesita mas distancia para
+            enfocar (comun en iPhone) - acerca el codigo sin acercar el equipo. */}
+        {estado === 'activo' && zoomCap && (
+          <div className="absolute inset-x-3 bottom-3 flex items-center gap-2 rounded-xl bg-ink-950/70 px-3 py-2 text-white backdrop-blur-sm">
+            <ZoomIn className="size-4 shrink-0" />
+            <input
+              type="range"
+              min={zoomCap.min}
+              max={zoomCap.max}
+              step={zoomCap.step || 0.1}
+              value={zoom}
+              onChange={(e) => cambiarZoom(parseFloat(e.target.value))}
+              className="h-1.5 w-full accent-accent-400"
+            />
           </div>
         )}
       </div>
