@@ -16,10 +16,22 @@ export function CameraScanner({ onScan, activo }: Props) {
   const scannerRef = useRef<Html5Qrcode | null>(null)
   const ultimoScan = useRef<{ codigo: string; t: number }>({ codigo: '', t: 0 })
   const [estado, setEstado] = useState<'iniciando' | 'activo' | 'error'>('iniciando')
+  const [mensajeError, setMensajeError] = useState<string>('')
 
   useEffect(() => {
     if (!activo) return
     let cancelado = false
+
+    // Safari en iOS no expone mediaDevices si la pagina no esta en HTTPS
+    // (o localhost) o si el navegador es muy antiguo: sin esto, el intento
+    // de start() de abajo lanzaria un TypeError poco claro para el usuario.
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMensajeError(
+        'Este navegador no permite usar la cámara aquí. En iPhone, abre la página con Safari (no dentro de otra app) y verifica que la URL empiece con https://.',
+      )
+      setEstado('error')
+      return
+    }
 
     const scanner = new Html5Qrcode(contenedorId.current, {
       formatsToSupport: [
@@ -44,6 +56,20 @@ export function CameraScanner({ onScan, activo }: Props) {
             return { width: lado, height: Math.floor(lado * 0.62) }
           },
           aspectRatio: 1.2,
+          // En iPhone/Safari, si no se piden dimensiones explicitas la camara
+          // trasera suele entregar un stream de baja resolucion (~640x480),
+          // insuficiente para decodificar codigos de barra 1D (EAN-13, UPC-A,
+          // etc. tienen barras muy finas). Pedir una resolucion alta con
+          // "ideal" (no "exact"/"min") es un requisito flexible: si el
+          // dispositivo no la soporta, el navegador entrega la mas cercana en
+          // vez de fallar. NOTA: al definir "videoConstraints" la libreria
+          // ignora por completo el primer argumento (facingMode de arriba),
+          // por eso hay que repetirlo aqui tambien.
+          videoConstraints: {
+            facingMode: 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
         },
         (texto) => {
           // Anti-rebote: ignora la misma lectura por 1.2s
@@ -62,7 +88,20 @@ export function CameraScanner({ onScan, activo }: Props) {
         },
       )
       .then(() => !cancelado && setEstado('activo'))
-      .catch(() => !cancelado && setEstado('error'))
+      .catch((err: unknown) => {
+        if (cancelado) return
+        const nombre = err instanceof Error ? err.name : ''
+        const texto =
+          nombre === 'NotAllowedError'
+            ? 'Permiso de cámara denegado. En iPhone: Ajustes → Safari → Cámara → Permitir (o el candado 🔒 en la barra de direcciones), y vuelve a intentar.'
+            : nombre === 'NotFoundError'
+            ? 'No se encontró una cámara trasera en este dispositivo.'
+            : nombre === 'NotReadableError'
+            ? 'La cámara está siendo usada por otra app. Cierra otras apps que la usen e intenta de nuevo.'
+            : 'No se pudo acceder a la cámara. Revisa los permisos del navegador y que uses HTTPS.'
+        setMensajeError(texto)
+        setEstado('error')
+      })
 
     return () => {
       cancelado = true
@@ -104,10 +143,8 @@ export function CameraScanner({ onScan, activo }: Props) {
         <div className="absolute inset-0 grid place-items-center bg-ink-950/85 px-6 text-center text-white">
           <div className="flex flex-col items-center gap-2">
             <CameraOff className="size-7 text-red-400" />
-            <p className="text-sm font-medium">No se pudo acceder a la camara.</p>
-            <p className="text-xs text-white/60">
-              Revisa los permisos del navegador y que uses HTTPS.
-            </p>
+            <p className="text-sm font-medium">No se pudo acceder a la cámara.</p>
+            <p className="text-xs text-white/60">{mensajeError}</p>
           </div>
         </div>
       )}
