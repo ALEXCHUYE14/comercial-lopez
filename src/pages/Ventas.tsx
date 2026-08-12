@@ -21,11 +21,13 @@ import {
   fechaHora,
   fechaCorta,
   horaCorta,
+  cantidad,
   ETIQUETA_PAGO,
   ymd,
   cx,
 } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
+import { construirTicketHtml, imprimirTicketHtml, type TicketLinea } from '@/utils/ticket'
 import type { DetalleVenta, MetodoPago, Perfil, Venta } from '@/types/database'
 
 // ── Rangos de fecha alineados a calendario (semana/quincena/mes) ─────────────
@@ -667,6 +669,47 @@ function TicketReprint({
     onAnulada()
   }
 
+  // Reimpresion: se arma el MISMO documento de ticket standalone que se usa
+  // al confirmar una venta nueva (ver src/utils/ticket.ts), en vez de
+  // reutilizar la pagina de la app con window.print(). Imprimir la pagina de
+  // la app dejaba el ticket recortado/en blanco porque el Sheet (modal) que
+  // lo contiene tiene animaciones con transform, que rompen el
+  // position:fixed en el que se apoyaba el truco de "ocultar todo menos el
+  // ticket" via CSS.
+  function imprimir() {
+    if (!venta) return
+    const lineas: TicketLinea[] = detalle.map((d) => ({
+      cantidadTexto: Number.isInteger(d.cantidad) ? `${d.cantidad}x` : cantidad(d.cantidad),
+      nombre: d.producto_nombre,
+      tag: d.modalidad === 'caja' ? 'Caja' : d.modalidad === 'saco' ? 'Saco' : undefined,
+      montoTexto: money(Number(d.subtotal)),
+    }))
+
+    const html = construirTicketHtml(
+      {
+        numero: venta.numero,
+        creadoEn: venta.creado_en,
+        cajeroNombre: venta.cajero_nombre,
+        subtotal: Number(venta.subtotal),
+        descuento: Number(venta.descuento),
+        igv: Number(venta.igv),
+        total: Number(venta.total),
+        metodo: venta.metodo,
+        pagoRecibido: Number(venta.pago_recibido),
+        vuelto: Number(venta.vuelto),
+        clienteNombre: venta.cliente_nombre,
+        anulada: venta.anulada,
+      },
+      lineas,
+    )
+
+    try {
+      imprimirTicketHtml(html)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo abrir la ventana de impresión')
+    }
+  }
+
   if (!venta) return null
 
   return (
@@ -684,7 +727,7 @@ function TicketReprint({
           <Button
             variant="outline"
             className="flex-1"
-            onClick={() => window.print()}
+            onClick={imprimir}
             disabled={cargando}
           >
             <Printer className="size-4" /> Imprimir
@@ -702,10 +745,7 @@ function TicketReprint({
         {venta.anulada && <Badge tone="danger">Anulada</Badge>}
       </div>
 
-      <div
-        id="ticket-imprimible"
-        className="rounded-xl border border-dashed border-ink-200 p-4 font-sans text-sm"
-      >
+      <div className="rounded-xl border border-dashed border-ink-200 p-4 font-sans text-sm">
         <div className="mb-3 text-center">
           <p className="font-display text-base font-bold">{BRAND.nombre.toUpperCase()}</p>
           <p className="text-xs text-ink-400">{fechaHora(venta.creado_en)}</p>

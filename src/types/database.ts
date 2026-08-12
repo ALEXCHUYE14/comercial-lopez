@@ -6,6 +6,15 @@ export type TipoMovimiento = 'entrada' | 'salida' | 'ajuste' | 'venta' | 'devolu
 export type EstadoCompra = 'pagado' | 'pendiente'
 export type MotivoMerma = 'vencido' | 'danado' | 'consumo_interno' | 'otro'
 export type EstadoCaja = 'abierta' | 'cerrada'
+export type CategoriaEgreso =
+  | 'proveedor'
+  | 'servicios'
+  | 'alquiler'
+  | 'planilla'
+  | 'transporte'
+  | 'mantenimiento'
+  | 'otro'
+export type MetodoEgreso = 'efectivo' | 'yape' | 'transferencia' | 'otro'
 
 export type Perfil = {
   id: string
@@ -176,6 +185,20 @@ export type Merma = {
   creado_en: string
 }
 
+export type Egreso = {
+  id: string
+  concepto: string
+  categoria: CategoriaEgreso
+  monto: number
+  metodo: MetodoEgreso
+  proveedor_id: string | null
+  proveedor_nombre: string | null
+  notas: string | null
+  usuario_id: string | null
+  usuario_nombre: string | null
+  creado_en: string
+}
+
 export type ItemCarrito = {
   producto: Producto
   cantidad: number
@@ -201,6 +224,7 @@ export interface Database {
       compras: Tabla<Compra>
       detalle_compras: Tabla<DetalleCompra>
       mermas: Tabla<Merma>
+      egresos: Tabla<Egreso>
     }
     Views: Record<string, never>
     Functions: {
@@ -247,6 +271,7 @@ export interface Database {
       estado_compra: EstadoCompra
       motivo_merma: MotivoMerma
       estado_caja: EstadoCaja
+      categoria_egreso: CategoriaEgreso
     }
     CompositeTypes: Record<string, never>
   }

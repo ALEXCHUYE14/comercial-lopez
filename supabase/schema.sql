@@ -415,7 +415,34 @@ alter table public.mermas alter column cantidad type double precision using cant
 create index if not exists idx_mermas_fecha on public.mermas (creado_en desc);
 
 -- ----------------------------------------------------------------------------
--- 15. STORAGE - BUCKET DE FOTOS DE PRODUCTOS
+-- 15. EGRESOS (gastos operativos del negocio: pagos a proveedores, servicios,
+--     alquiler, planilla, etc. — dinero que sale de la caja/banco del negocio)
+-- ----------------------------------------------------------------------------
+do $$ begin
+  create type categoria_egreso as enum (
+    'proveedor', 'servicios', 'alquiler', 'planilla', 'transporte', 'mantenimiento', 'otro'
+  );
+exception when duplicate_object then null; end $$;
+
+create table if not exists public.egresos (
+  id                uuid primary key default gen_random_uuid(),
+  concepto          text not null,
+  categoria         categoria_egreso not null default 'otro',
+  monto             numeric(10,2) not null check (monto > 0),
+  metodo            text not null default 'efectivo',
+  proveedor_id      uuid references public.proveedores(id) on delete set null,
+  proveedor_nombre  text,
+  notas             text,
+  usuario_id        uuid references public.perfiles(id) on delete set null,
+  usuario_nombre    text,
+  creado_en         timestamptz not null default now()
+);
+
+create index if not exists idx_egresos_fecha      on public.egresos (creado_en desc);
+create index if not exists idx_egresos_categoria  on public.egresos (categoria);
+
+-- ----------------------------------------------------------------------------
+-- 16. STORAGE - BUCKET DE FOTOS DE PRODUCTOS
 -- ----------------------------------------------------------------------------
 -- El frontend (useProductoImagen.ts) sube las fotos a este bucket y usa
 -- getPublicUrl(), por lo que debe existir y ser publico para lectura.
@@ -804,6 +831,7 @@ alter table public.proveedores             enable row level security;
 alter table public.compras                 enable row level security;
 alter table public.detalle_compras         enable row level security;
 alter table public.mermas                  enable row level security;
+alter table public.egresos                 enable row level security;
 
 -- PERFILES
 drop policy if exists perfiles_select on public.perfiles;
@@ -902,6 +930,14 @@ create policy mermas_select on public.mermas for select
   to authenticated using (true);
 drop policy if exists mermas_write on public.mermas;
 create policy mermas_write on public.mermas for all
+  to authenticated using (public.es_admin()) with check (public.es_admin());
+
+-- EGRESOS
+drop policy if exists egresos_select on public.egresos;
+create policy egresos_select on public.egresos for select
+  to authenticated using (true);
+drop policy if exists egresos_write on public.egresos;
+create policy egresos_write on public.egresos for all
   to authenticated using (public.es_admin()) with check (public.es_admin());
 
 -- ============================================================================
