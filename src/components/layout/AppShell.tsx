@@ -61,16 +61,16 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* ---------- Sidebar (desktop) ---------- */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-ink-100 bg-white lg:flex">
         <div className="flex items-center gap-2.5 px-5 py-5">
-          <div className="grid size-9 place-items-center rounded-xl bg-ink-900 text-white">
+          <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-ink-900 text-white">
             <Store className="size-5" />
           </div>
-          <div className="leading-tight">
+          <div className="min-w-0 leading-tight">
             <p className="font-display text-[0.95rem] font-bold text-ink-900">{BRAND.nombre}</p>
             <p className="text-[0.7rem] font-medium text-ink-400">Gestion Comercial</p>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-0.5 px-3 py-2">
+        <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
           {items.map(({ to, label, icon: Icon }) => (
             <NavLink
               key={to}
