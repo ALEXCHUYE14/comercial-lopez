@@ -51,44 +51,7 @@ export function Login() {
           Layout controlado por .login-left-col; background por leftColBgStyle.
           display:block con position:relative para contenido absolutamente posicionado.
       ════════════════════════════════════════════════════════════════════════ */}
-      <div aria-hidden="true" className="login-left-col" style={leftColBgStyle}>
-        {/* Gradient overlay para contraste del texto */}
-        <div style={{
-          position: 'absolute',
-          inset: 0,
-          background: 'linear-gradient(to top, rgba(14,14,13,0.92) 0%, rgba(14,14,13,0.22) 55%, rgba(14,14,13,0.04) 100%)',
-        }} />
-        {/* Texto de marca en la parte inferior */}
-        <div style={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          padding: '60px 40px',
-          textAlign: 'center',
-          color: '#ffffff',
-          zIndex: 1,
-        }}>
-          <h2 style={{
-            fontFamily: '"Bricolage Grotesque", sans-serif',
-            fontSize: '2.4rem',
-            fontWeight: 900,
-            letterSpacing: '-0.5px',
-            lineHeight: 1.2,
-            textShadow: '0 2px 12px rgba(0,0,0,0.4)',
-            margin: 0,
-          }}>
-            {BRAND.nombre}
-          </h2>
-          <p style={{ marginTop: '10px', fontSize: '1rem', opacity: 0.7, fontWeight: 500 }}>
-            Sistema de Gestión y Punto de Venta
-          </p>
-          <div style={{ width: '48px', height: '1px', background: 'rgba(255,255,255,0.3)', margin: '20px auto' }} />
-          <p style={{ fontSize: '0.85rem', opacity: 0.5, fontStyle: 'italic' }}>
-            "Cada venta cuenta, cada cliente importa."
-          </p>
-        </div>
-      </div>
+      <div aria-hidden="true" className="login-left-col" style={leftColBgStyle} />
 
       {/*
        * ── Media queries ───────────────────────────────────────────────────────
