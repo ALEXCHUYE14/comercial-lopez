@@ -1,4 +1,4 @@
-// Tipos del dominio del sistema Comercial Ruiz
+// Tipos del dominio del sistema Comercial López JYD EIRL
 
 export type Rol = 'administrador' | 'supervisor' | 'cajero'
 export type MetodoPago = 'efectivo' | 'yape' | 'fiado'

@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Sistema de Gestion Comercial y POS en tiempo real - Bodega Cesar Ruiz",
+  "description": "Sistema de Gestion Comercial y POS en tiempo real - Comercial López JYD EIRL",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

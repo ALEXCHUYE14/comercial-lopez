@@ -23,7 +23,7 @@ const url = esUrlValida(urlRaw) ? urlRaw : ''
 
 if (!url || !anonKey) {
   console.error(
-    '[Comercial Ruiz] Faltan o son invalidas VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. ' +
+    '[Comercial López JYD EIRL] Faltan o son invalidas VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY. ' +
       'Configura estas variables en el panel de Vercel (Settings → Environment Variables) ' +
       'y vuelve a desplegar.',
   )

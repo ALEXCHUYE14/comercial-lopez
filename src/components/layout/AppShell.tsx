@@ -44,7 +44,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const items = NAV.filter((i) => tieneAcceso(perfil?.rol, i.minRol))
   useAvisoStockBajo()
 
-  // El admin muestra el operador de marca ("Cesar Ruiz"); los cajeros muestran su primer nombre
+  // El admin muestra el operador de marca ("López"); los cajeros muestran su primer nombre
   const nombreDisplay =
     perfil?.rol === 'administrador'
       ? BRAND.operador

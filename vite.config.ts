@@ -11,8 +11,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Cesar Ruiz - Gestion Comercial',
-        short_name: 'CR POS',
+        name: 'Comercial López JYD EIRL - Gestion Comercial',
+        short_name: 'CL POS',
         description: 'Sistema de punto de venta y gestion en tiempo real',
         theme_color: '#0a0a0a',
         background_color: '#fafaf9',
