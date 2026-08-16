@@ -27,6 +27,10 @@ export default defineConfig({
             },
             workbox: {
                 globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+                // Las fotos de negocio (logo/tienda) no se precachean: pueden pesar
+                // varios MB y no son parte del app shell; se sirven por red normal.
+                globIgnores: ['**/img/**'],
+                maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
                 // Borra las caches de versiones anteriores al activar el nuevo
                 // service worker, para que nunca sirva JS/CSS de un despliegue viejo.
                 cleanupOutdatedCaches: true,
