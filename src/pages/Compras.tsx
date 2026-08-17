@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import {
   Plus,
   ShoppingBag,
-  ChevronDown,
   Trash2,
   Search,
   CheckCircle2,
@@ -591,7 +590,3 @@ function EmptyState({ filtro }: { filtro: string }) {
     </div>
   )
 }
-
-// Icono decorativo para el sheet de detalle
-function ChevronDown_unused() { return <ChevronDown /> }
-void ChevronDown_unused

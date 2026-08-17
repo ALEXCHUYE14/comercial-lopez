@@ -35,7 +35,15 @@ export function StockAdjust({ open, onClose, producto, onListo }: Props) {
     tipo === 'ajuste' ? cantNum : producto.stock_actual + signo * cantNum
 
   async function aplicar() {
-    if (cantNum <= 0) {
+    // "Ajuste" fija el stock real tras un conteo fisico: 0 es un valor
+    // legitimo (ej. el conteo revela que no queda nada). Solo se rechaza si
+    // el campo esta vacio o es negativo. Entrada/salida si exigen > 0: no
+    // tiene sentido registrar un movimiento de "0 unidades".
+    if (cantidad.trim() === '' || cantNum < 0) {
+      toast.error('Ingresa una cantidad valida.')
+      return
+    }
+    if (tipo !== 'ajuste' && cantNum === 0) {
       toast.error('Ingresa una cantidad valida.')
       return
     }
@@ -128,7 +136,7 @@ export function StockAdjust({ open, onClose, producto, onListo }: Props) {
           />
         </label>
 
-        {cantNum > 0 && (
+        {cantidad.trim() !== '' && (tipo === 'ajuste' ? cantNum >= 0 : cantNum > 0) && (
           <div className="flex items-center justify-between rounded-xl bg-ink-900 px-4 py-3 text-white">
             <span className="text-sm text-white/60">Stock resultante</span>
             <span className="tabular font-display text-lg font-bold">
