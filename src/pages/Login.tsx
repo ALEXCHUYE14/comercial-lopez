@@ -108,7 +108,7 @@ export function Login() {
           <div style={{
             width: '100%',
             maxWidth: '400px',
-            backgroundColor: '#ffffff',
+            backgroundColor: 'transparent',
             border: '1px solid #e2e8f0',
             borderRadius: '12px',
             boxShadow: '0 10px 25px -5px rgba(0,0,0,0.05), 0 8px 10px -6px rgba(0,0,0,0.05)',
@@ -121,9 +121,9 @@ export function Login() {
                 src="/img/logo.png"
                 alt={BRAND.nombre}
                 style={{
-                  maxHeight: '80px',
-                  width: 'auto',
-                  borderRadius: '12px',
+                  width: '80px',
+                  height: '80px',
+                  borderRadius: '50%',
                   display: 'inline-block',
                   objectFit: 'cover',
                 }}
