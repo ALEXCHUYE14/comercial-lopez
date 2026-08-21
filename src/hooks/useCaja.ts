@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { inicioDelDia, finDelDia } from '@/utils/format'
 import type { CajaRegistro } from '@/types/database'
 
 export interface ResumenCierre {
@@ -10,6 +11,13 @@ export interface ResumenCierre {
   esperado_efectivo: number
   ingresado_real: number
   diferencia: number
+}
+
+export interface AperturaResultado {
+  caja: CajaRegistro
+  /** Ventas de hoy que estaban sin caja (se vendio sin abrir caja) y se vincularon a esta apertura */
+  ventasVinculadas: number
+  montoVinculado: number
 }
 
 // Clave de localStorage para persistir el ID de caja activa entre recargas
@@ -94,25 +102,68 @@ export function useCaja(cajeroId: string | null) {
     cargarHistorial()
   }, [cargar, cargarHistorial])
 
-  async function abrir(montoInicial: number, cajeroNombre: string): Promise<CajaRegistro> {
+  async function abrir(montoInicial: number, cajeroNombre: string): Promise<AperturaResultado> {
+    if (!cajeroId) throw new Error('No hay sesion activa.')
+
+    // Ventas "huerfanas": se registraron hoy con este cajero pero sin caja
+    // abierta (ej. se olvido aperturar caja y aun asi se vendio). El RPC
+    // registrar_venta las guarda igual con caja_id = null, asi que nunca se
+    // pierden — pero tampoco quedan reflejadas en ningun cierre de caja. Se
+    // buscan aqui, antes de crear la caja, para poder incluirlas en la
+    // apertura y que el cuadre del dia salga correcto.
+    const { data: huerfanas } = await supabase
+      .from('ventas')
+      .select('id, metodo, total')
+      .eq('cajero_id', cajeroId)
+      .is('caja_id', null)
+      .eq('anulada', false)
+      .gte('creado_en', inicioDelDia().toISOString())
+      .lte('creado_en', finDelDia().toISOString())
+
+    const listaHuerfanas = huerfanas ?? []
+    const sumaPorMetodo = (m: string) =>
+      listaHuerfanas
+        .filter((v) => v.metodo === m)
+        .reduce((s, v) => s + toNum(v.total), 0)
+
+    const totalEfectivoInicial = sumaPorMetodo('efectivo')
+    const totalYapeInicial = sumaPorMetodo('yape')
+    const totalFiadoInicial = sumaPorMetodo('fiado')
+
     const { data, error } = await supabase
       .from('cajas')
       .insert({
         cajero_id: cajeroId,
         cajero_nombre: cajeroNombre,
         monto_inicial: toNum(montoInicial),
-        total_efectivo: 0,
-        total_yape: 0,
-        total_fiado: 0,
+        total_efectivo: totalEfectivoInicial,
+        total_yape: totalYapeInicial,
+        total_fiado: totalFiadoInicial,
         estado: 'abierta',
       })
       .select()
       .single()
     if (error) throw error
+
+    // Vincula las ventas huerfanas a la caja recien creada (requiere rol
+    // administrador por RLS). Si la vinculacion falla por permisos, la
+    // apertura de caja igual continua: los totales iniciales ya quedaron
+    // sumados arriba, solo no se re-etiquetan esas ventas con el caja_id.
+    if (listaHuerfanas.length > 0) {
+      await supabase
+        .from('ventas')
+        .update({ caja_id: data.id })
+        .in('id', listaHuerfanas.map((v) => v.id))
+    }
+
     localStorage.setItem(CAJA_KEY, data.id)
     setCaja(data)
     setHistorial((prev) => [data, ...prev])
-    return data
+    return {
+      caja: data,
+      ventasVinculadas: listaHuerfanas.length,
+      montoVinculado: totalEfectivoInicial + totalYapeInicial + totalFiadoInicial,
+    }
   }
 
   async function cerrar(montoReal: number): Promise<ResumenCierre> {

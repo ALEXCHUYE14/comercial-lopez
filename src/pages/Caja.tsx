@@ -288,8 +288,12 @@ export function Caja() {
     }
     setProcesando(true)
     try {
-      await abrir(monto)
-      toast.exito('Caja abierta correctamente')
+      const { ventasVinculadas, montoVinculado } = await abrir(monto)
+      toast.exito(
+        ventasVinculadas > 0
+          ? `Caja abierta. Se vincularon ${ventasVinculadas} venta${ventasVinculadas === 1 ? '' : 's'} de hoy (${money(montoVinculado)}) registradas sin caja.`
+          : 'Caja abierta correctamente',
+      )
       setAbrirOpen(false)
       setMontoInicial('')
     } catch (e) {

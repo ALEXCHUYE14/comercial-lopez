@@ -3,7 +3,7 @@ import {
   useContext,
   type ReactNode,
 } from 'react'
-import { useCaja, type ResumenCierre } from '@/hooks/useCaja'
+import { useCaja, type ResumenCierre, type AperturaResultado } from '@/hooks/useCaja'
 import { useAuth } from '@/context/AuthContext'
 import { BRAND } from '@/config/brand'
 import type { CajaRegistro } from '@/types/database'
@@ -12,7 +12,7 @@ interface CajaState {
   caja: CajaRegistro | null
   historial: CajaRegistro[]
   cargando: boolean
-  abrir: (montoInicial: number) => Promise<CajaRegistro>
+  abrir: (montoInicial: number) => Promise<AperturaResultado>
   cerrar: (montoReal: number) => Promise<ResumenCierre>
   sumarVenta: (cajaId: string, metodo: 'efectivo' | 'yape' | 'fiado', monto: number) => Promise<void>
   total: number
@@ -39,7 +39,7 @@ export function CajaProvider({ children }: { children: ReactNode }) {
     recargarHistorial,
   } = useCaja(cajeroId)
 
-  async function abrir(montoInicial: number): Promise<CajaRegistro> {
+  async function abrir(montoInicial: number): Promise<AperturaResultado> {
     const nombre = perfil?.rol === 'administrador'
       ? BRAND.operador
       : (perfil?.nombre?.split(' ')[0] ?? 'Cajero')

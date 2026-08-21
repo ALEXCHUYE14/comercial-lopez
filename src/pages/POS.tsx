@@ -32,7 +32,7 @@ import type { ItemCarrito, MetodoPago, ModalidadVenta, Producto, Venta } from '@
 export function POS() {
   const { productos, categorias, cargando } = useProductos()
   const { clientes } = useClientes()
-  const { perfil, esAdmin } = useAuth()
+  const { perfil } = useAuth()
   const nombreDisplay = perfil?.rol === 'administrador' ? BRAND.operador : (perfil?.nombre?.split(' ')[0] ?? 'Cajero')
   const { caja, cargando: cajaCargando, abrir: abrirCaja, sumarVenta } = useCajaCtx()
   const toast = useToast()
@@ -52,8 +52,12 @@ export function POS() {
   const [granelSel, setGranelSel] = useState<Producto | null>(null)
   const [cantGranel, setCantGranel] = useState('1')
 
-  // Cajero sin caja abierta debe abrir una antes de vender
-  const necesitaCaja = !esAdmin && !cajaCargando && !caja
+  // Nadie puede vender sin caja abierta — incluye al administrador. Antes
+  // se eximia al admin, lo que permitia registrar ventas sin caja activa:
+  // esas ventas se guardaban igual (con caja_id null) pero quedaban fuera
+  // de cualquier cierre/cuadre de caja, dando la falsa impresion de que
+  // "no se guardaron".
+  const necesitaCaja = !cajaCargando && !caja
 
   // --- Manejo de escaneo (camara o lector fisico) ---
   const onScan = useCallback(
@@ -114,8 +118,12 @@ export function POS() {
   async function confirmarAbrirCaja() {
     setAbriendoCaja(true)
     try {
-      await abrirCaja(parseFloat(montoInicial) || 0)
-      toast.exito('Caja abierta. Ya puedes vender.')
+      const { ventasVinculadas, montoVinculado } = await abrirCaja(parseFloat(montoInicial) || 0)
+      toast.exito(
+        ventasVinculadas > 0
+          ? `Caja abierta. Se vincularon ${ventasVinculadas} venta${ventasVinculadas === 1 ? '' : 's'} de hoy (${money(montoVinculado)}) registradas sin caja.`
+          : 'Caja abierta. Ya puedes vender.',
+      )
       setAbrirCajaOpen(false)
       setMontoInicial('')
     } catch (e) {
@@ -198,7 +206,7 @@ export function POS() {
     }
   }
 
-  // Banner de caja cerrada — bloquea ventas para cajero
+  // Banner de caja cerrada — bloquea ventas para cualquier rol, incluido administrador
   if (necesitaCaja) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
