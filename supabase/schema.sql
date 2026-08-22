@@ -228,6 +228,17 @@ create table if not exists public.cajas (
   cerrada_en      timestamptz
 );
 
+-- Migracion en caliente: totales de cobros de deuda (abonos de clientes) y
+-- egresos, acumulados por caja igual que total_efectivo/total_yape, para que
+-- el cierre de caja pueda reflejar la formula completa del dia:
+--   Total en caja = (Fondo inicial + Ventas directas + Cobros de deuda) - Egresos
+-- Se separan por metodo (efectivo vs. el resto) porque solo el efectivo
+-- afecta el arqueo fisico de billetes/monedas al cerrar caja.
+alter table public.cajas add column if not exists total_cobros_efectivo  numeric(10,2) not null default 0;
+alter table public.cajas add column if not exists total_cobros_yape      numeric(10,2) not null default 0;
+alter table public.cajas add column if not exists total_egresos_efectivo numeric(10,2) not null default 0;
+alter table public.cajas add column if not exists total_egresos_otros    numeric(10,2) not null default 0;
+
 create index if not exists idx_cajas_cajero on public.cajas (cajero_id);
 create index if not exists idx_cajas_estado on public.cajas (estado);
 
@@ -342,7 +353,19 @@ create table if not exists public.pagos_credito (
   creado_en   timestamptz not null default now()
 );
 
+-- Migracion en caliente: cada abono queda vinculado a la caja en la que se
+-- cobro (igual que las ventas) y guarda el metodo de pago con el que el
+-- cliente cancelo su deuda — ambos indispensables para que el cierre de caja
+-- pueda sumar "Cobros de deuda" como ingreso de la sesion.
+alter table public.pagos_credito add column if not exists caja_id uuid references public.cajas(id) on delete set null;
+alter table public.pagos_credito add column if not exists metodo  metodo_pago not null default 'efectivo';
+
+do $$ begin
+  alter table public.pagos_credito add constraint pagos_credito_monto_positivo check (monto > 0);
+exception when duplicate_object then null; end $$;
+
 create index if not exists idx_pagos_cliente on public.pagos_credito (cliente_id, creado_en desc);
+create index if not exists idx_pagos_caja    on public.pagos_credito (caja_id);
 
 -- ----------------------------------------------------------------------------
 -- 11. PROVEEDORES
@@ -438,8 +461,14 @@ create table if not exists public.egresos (
   creado_en         timestamptz not null default now()
 );
 
+-- Migracion en caliente: vincula cada egreso a la caja activa en la que se
+-- registro, para trazabilidad y para poder restar su monto del saldo
+-- disponible de esa sesion en tiempo real (ver RPC registrar_egreso).
+alter table public.egresos add column if not exists caja_id uuid references public.cajas(id) on delete set null;
+
 create index if not exists idx_egresos_fecha      on public.egresos (creado_en desc);
 create index if not exists idx_egresos_categoria  on public.egresos (categoria);
+create index if not exists idx_egresos_caja       on public.egresos (caja_id);
 
 -- ----------------------------------------------------------------------------
 -- 16. STORAGE - BUCKET DE FOTOS DE PRODUCTOS
@@ -789,29 +818,208 @@ end;
 $$;
 
 -- ----------------------------------------------------------------------------
--- RPC 6: REGISTRAR ABONO CLIENTE (resta deuda y guarda el pago)
+-- RPC 6: REGISTRAR ABONO CLIENTE
+-- Resta la deuda del cliente, guarda el pago y — si se indica una caja
+-- abierta — acredita el monto como "Cobro de deuda" en esa sesion de caja,
+-- todo en una unica transaccion (la funcion completa o no hace nada).
 -- ----------------------------------------------------------------------------
 create or replace function public.registrar_abono_cliente(
   p_cliente_id uuid,
   p_monto      numeric,
-  p_nota       text default null
+  p_nota       text        default null,
+  p_metodo     metodo_pago default 'efectivo',
+  p_caja_id    uuid        default null
 )
 returns public.pagos_credito
 language plpgsql
 security definer set search_path = public
 as $$
 declare
-  v_pago public.pagos_credito%rowtype;
+  v_cliente public.clientes_credito%rowtype;
+  v_caja    public.cajas%rowtype;
+  v_pago    public.pagos_credito%rowtype;
 begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede registrar abonos de clientes.';
+  end if;
+
+  if p_monto is null or p_monto <= 0 then
+    raise exception 'El monto del abono debe ser mayor a 0.';
+  end if;
+
+  if p_metodo not in ('efectivo', 'yape') then
+    raise exception 'Metodo de pago no soportado para abonos: %', p_metodo;
+  end if;
+
+  -- Bloquea la fila del cliente para evitar que dos abonos simultaneos lean
+  -- la misma deuda_actual y ambos pasen la validacion (condicion de carrera).
+  select * into v_cliente from public.clientes_credito where id = p_cliente_id for update;
+  if not found then raise exception 'Cliente no encontrado.'; end if;
+
+  if p_monto > v_cliente.deuda_actual then
+    raise exception 'El abono (%) no puede superar la deuda actual del cliente (%).',
+      p_monto, v_cliente.deuda_actual;
+  end if;
+
+  -- Si se indica una caja, debe estar abierta y pertenecer al cajero actual
+  -- (o quien ejecuta debe ser administrador) — misma regla que incrementar_caja.
+  if p_caja_id is not null then
+    select * into v_caja from public.cajas where id = p_caja_id for update;
+    if not found then
+      raise exception 'Caja no encontrada.';
+    end if;
+    if v_caja.estado <> 'abierta' then
+      raise exception 'La caja indicada ya esta cerrada.';
+    end if;
+    if v_caja.cajero_id <> auth.uid() and not public.es_admin() then
+      raise exception 'No puedes registrar cobros en una caja ajena.';
+    end if;
+  end if;
+
   update public.clientes_credito
     set deuda_actual = greatest(deuda_actual - p_monto, 0)
     where id = p_cliente_id;
 
-  insert into public.pagos_credito (cliente_id, monto, nota, cajero_id)
-    values (p_cliente_id, p_monto, p_nota, auth.uid())
+  insert into public.pagos_credito (cliente_id, monto, nota, cajero_id, caja_id, metodo)
+    values (p_cliente_id, p_monto, p_nota, auth.uid(), p_caja_id, p_metodo)
     returning * into v_pago;
 
+  if p_caja_id is not null then
+    if p_metodo = 'efectivo' then
+      update public.cajas set total_cobros_efectivo = total_cobros_efectivo + p_monto where id = p_caja_id;
+    else
+      update public.cajas set total_cobros_yape = total_cobros_yape + p_monto where id = p_caja_id;
+    end if;
+  end if;
+
   return v_pago;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- RPC 7: REGISTRAR EGRESO
+-- Inserta el egreso y — si se indica una caja abierta — resta de inmediato
+-- su monto del saldo disponible de esa sesion, todo en una unica transaccion.
+-- Un egreso en efectivo no puede superar el efectivo disponible en la caja.
+-- ----------------------------------------------------------------------------
+create or replace function public.registrar_egreso(
+  p_concepto     text,
+  p_categoria    categoria_egreso,
+  p_monto        numeric,
+  p_metodo       text,
+  p_proveedor_id uuid default null,
+  p_notas        text default null,
+  p_caja_id      uuid default null
+)
+returns public.egresos
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_caja        public.cajas%rowtype;
+  v_prov_nombre text;
+  v_nombre      text;
+  v_egreso      public.egresos%rowtype;
+  v_disponible  numeric(10,2);
+begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede registrar egresos.';
+  end if;
+
+  if p_concepto is null or btrim(p_concepto) = '' then
+    raise exception 'El concepto del egreso es obligatorio.';
+  end if;
+
+  if p_monto is null or p_monto <= 0 then
+    raise exception 'El monto del egreso debe ser mayor a 0.';
+  end if;
+
+  select nombre into v_nombre from public.perfiles where id = auth.uid();
+  if p_proveedor_id is not null then
+    select nombre into v_prov_nombre from public.proveedores where id = p_proveedor_id;
+  end if;
+
+  if p_caja_id is not null then
+    select * into v_caja from public.cajas where id = p_caja_id for update;
+    if not found then
+      raise exception 'Caja no encontrada.';
+    end if;
+    if v_caja.estado <> 'abierta' then
+      raise exception 'La caja indicada ya esta cerrada.';
+    end if;
+    if v_caja.cajero_id <> auth.uid() and not public.es_admin() then
+      raise exception 'No puedes registrar egresos en una caja ajena.';
+    end if;
+
+    -- Regla de negocio: un egreso en efectivo no puede dejar el efectivo de
+    -- la caja en negativo (fondo inicial + ventas efectivo + cobros efectivo
+    -- - egresos efectivo ya registrados = disponible actual).
+    if p_metodo = 'efectivo' then
+      v_disponible := v_caja.monto_inicial + v_caja.total_efectivo
+                       + v_caja.total_cobros_efectivo - v_caja.total_egresos_efectivo;
+      if p_monto > v_disponible then
+        raise exception 'Efectivo insuficiente en caja: disponible %, solicitado %.',
+          v_disponible, p_monto;
+      end if;
+    end if;
+  end if;
+
+  insert into public.egresos (
+    concepto, categoria, monto, metodo, proveedor_id, proveedor_nombre,
+    notas, usuario_id, usuario_nombre, caja_id
+  ) values (
+    btrim(p_concepto), p_categoria, p_monto, p_metodo, p_proveedor_id, v_prov_nombre,
+    p_notas, auth.uid(), v_nombre, p_caja_id
+  ) returning * into v_egreso;
+
+  if p_caja_id is not null then
+    if p_metodo = 'efectivo' then
+      update public.cajas set total_egresos_efectivo = total_egresos_efectivo + p_monto where id = p_caja_id;
+    else
+      update public.cajas set total_egresos_otros = total_egresos_otros + p_monto where id = p_caja_id;
+    end if;
+  end if;
+
+  return v_egreso;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- RPC 8: ELIMINAR EGRESO
+-- Revierte el total acreditado en la caja (solo si esta sigue abierta; una
+-- caja ya cerrada quedo archivada junto a su reporte PDF y no se toca) y
+-- borra el registro, en una unica transaccion.
+-- ----------------------------------------------------------------------------
+create or replace function public.eliminar_egreso(p_egreso_id uuid)
+returns void
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_egreso public.egresos%rowtype;
+  v_caja   public.cajas%rowtype;
+begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede eliminar egresos.';
+  end if;
+
+  select * into v_egreso from public.egresos where id = p_egreso_id for update;
+  if not found then raise exception 'Egreso no encontrado.'; end if;
+
+  if v_egreso.caja_id is not null then
+    select * into v_caja from public.cajas where id = v_egreso.caja_id for update;
+    if found and v_caja.estado = 'abierta' then
+      if v_egreso.metodo = 'efectivo' then
+        update public.cajas set total_egresos_efectivo = greatest(total_egresos_efectivo - v_egreso.monto, 0)
+          where id = v_egreso.caja_id;
+      else
+        update public.cajas set total_egresos_otros = greatest(total_egresos_otros - v_egreso.monto, 0)
+          where id = v_egreso.caja_id;
+      end if;
+    end if;
+  end if;
+
+  delete from public.egresos where id = p_egreso_id;
 end;
 $$;
 
@@ -902,6 +1110,15 @@ create policy mov_select on public.movimientos_inventario for select
 drop policy if exists pagos_select on public.pagos_credito;
 create policy pagos_select on public.pagos_credito for select
   to authenticated using (true);
+-- El INSERT normal de un abono va por el RPC registrar_abono_cliente (que ya
+-- valida todo y corre con privilegios de servidor, sin depender de RLS). Esta
+-- politica solo habilita el UPDATE que hace un administrador al abrir caja,
+-- para vincular caja_id a los abonos de hoy que se registraron sin caja
+-- abierta (ver useCaja.abrir en el frontend) — sin ella, ese update quedaba
+-- bloqueado para todo el mundo al no existir ninguna politica de escritura.
+drop policy if exists pagos_write on public.pagos_credito;
+create policy pagos_write on public.pagos_credito for all
+  to authenticated using (public.es_admin()) with check (public.es_admin());
 
 -- PROVEEDORES
 drop policy if exists proveedores_select on public.proveedores;

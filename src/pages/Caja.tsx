@@ -13,6 +13,8 @@ import {
   Filter,
   Trash2,
   X,
+  ArrowDownLeft,
+  ArrowUpRight,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useCajaCtx } from '@/context/CajaContext'
@@ -22,7 +24,7 @@ import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, horaCorta, ymd, ETIQUETA_PAGO, cx } from '@/utils/format'
-import type { ResumenCierre } from '@/hooks/useCaja'
+import { mensajeVinculacion, type ResumenCierre } from '@/hooks/useCaja'
 import type { CajaRegistro } from '@/types/database'
 
 // Constante fuera del componente — evita recreación del array en cada render
@@ -30,6 +32,21 @@ const RAPIDOS_INICIAL = [50, 100, 150, 200, 300, 500]
 
 // Conversión numérica segura — Supabase puede devolver NUMERIC como string
 const toNum = (v: unknown): number => Number(v ?? 0)
+
+// Efectivo físico esperado en caja: fondo inicial + ventas efectivo + cobros
+// de deuda en efectivo - egresos en efectivo. Es lo único que debería
+// coincidir con el conteo de billetes/monedas al cerrar (Yape/fiado no son
+// billetes en la gaveta).
+const esperadoEfectivoDe = (c: CajaRegistro): number =>
+  toNum(c.monto_inicial) + toNum(c.total_efectivo) +
+  toNum(c.total_cobros_efectivo) - toNum(c.total_egresos_efectivo)
+
+// Balance neto del turno según la fórmula del cierre de caja:
+//   Total en caja = (Fondo inicial + Ventas directas + Cobros de deuda) - Egresos
+const balanceNetoDe = (c: CajaRegistro): number =>
+  toNum(c.monto_inicial) + toNum(c.total_efectivo) + toNum(c.total_yape) +
+  toNum(c.total_cobros_efectivo) + toNum(c.total_cobros_yape) -
+  toNum(c.total_egresos_efectivo) - toNum(c.total_egresos_otros)
 
 // ─── Generador de reporte PDF de cierre de caja ───────────────────────────────
 
@@ -46,13 +63,27 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
   )
 
   try {
-    const { data: ventasData, error } = await supabase
-      .from('ventas')
-      .select('*')
-      .eq('caja_id', cajaData.id)
-      .order('creado_en', { ascending: true })
+    const [{ data: ventasData, error }, { data: cobrosData }, { data: egresosData }] = await Promise.all([
+      supabase.from('ventas').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
+      supabase.from('pagos_credito').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
+      supabase.from('egresos').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
+    ])
 
     if (error) throw error
+
+    // Nombres de cliente para los cobros: se resuelven aparte (en vez de un
+    // embed de PostgREST) para mantener el mismo patron de consulta simple
+    // usado en el resto de la app (ver useClientes.calcularDiasSinPago).
+    const cobrosPrevios = cobrosData ?? []
+    const clienteIdsCobros = [...new Set(cobrosPrevios.map((p) => p.cliente_id))]
+    const nombresCliente = new Map<string, string>()
+    if (clienteIdsCobros.length > 0) {
+      const { data: clientesData } = await supabase
+        .from('clientes_credito')
+        .select('id, nombre')
+        .in('id', clienteIdsCobros)
+      ;(clientesData ?? []).forEach((c) => nombresCliente.set(c.id, c.nombre))
+    }
 
     const ventas = ventasData ?? []
     const ventasValidas  = ventas.filter((v) => !v.anulada)
@@ -63,11 +94,25 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
     const totalYape     = ventasValidas.filter((v) => v.metodo === 'yape').reduce((s, v) => s + toNum(v.total), 0)
     const totalFiado    = ventasValidas.filter((v) => v.metodo === 'fiado').reduce((s, v) => s + toNum(v.total), 0)
     const totalGeneral  = ventasValidas.reduce((s, v) => s + toNum(v.total), 0)
+    const totalVentasDirectas = totalEfectivo + totalYape
+
+    const cobros = cobrosPrevios
+    const cobrosEfectivo = cobros.filter((p) => p.metodo === 'efectivo').reduce((s, p) => s + toNum(p.monto), 0)
+    const cobrosYape     = cobros.filter((p) => p.metodo !== 'efectivo').reduce((s, p) => s + toNum(p.monto), 0)
+    const totalCobros    = cobrosEfectivo + cobrosYape
+
+    const egresos = egresosData ?? []
+    const egresosEfectivo = egresos.filter((e) => e.metodo === 'efectivo').reduce((s, e) => s + toNum(e.monto), 0)
+    const egresosOtros    = egresos.filter((e) => e.metodo !== 'efectivo').reduce((s, e) => s + toNum(e.monto), 0)
+    const totalEgresos    = egresosEfectivo + egresosOtros
 
     const montoInicial      = toNum(cajaData.monto_inicial)
-    const totalEfectivoCaja = toNum(cajaData.total_efectivo)
-    const esperadoEfectivo  = montoInicial + totalEfectivoCaja
+    // Efectivo fisico esperado: fondo + ventas efectivo + cobros efectivo - egresos efectivo
+    const esperadoEfectivo  = montoInicial + totalEfectivo + cobrosEfectivo - egresosEfectivo
     const diferencia        = toNum(montoRealContado) - esperadoEfectivo
+    // Balance neto del turno (formula completa del cierre de caja):
+    //   Total en caja = (Fondo inicial + Ventas directas + Cobros de deuda) - Egresos
+    const balanceNeto        = montoInicial + totalVentasDirectas + totalCobros - totalEgresos
 
     const diferenciaColor = diferencia >= 0 ? '#065f46' : '#991b1b'
     const diferenciaFondo = diferencia >= 0 ? '#ecfdf5' : '#fef2f2'
@@ -91,6 +136,37 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
             )
             .join('')
         : `<tr><td colspan="5" style="text-align:center;padding:16px;color:#aaa;">Sin ventas registradas en este turno</td></tr>`
+
+    const filasCobros =
+      cobros.length > 0
+        ? cobros
+            .map(
+              (p) => `
+          <tr>
+            <td class="center">${horaCorta(p.creado_en)}</td>
+            <td>${nombresCliente.get(p.cliente_id) ?? '—'}</td>
+            <td class="center"><span class="badge badge-${p.metodo}">${ETIQUETA_PAGO[p.metodo] ?? p.metodo}</span></td>
+            <td>${p.nota ? `<span style="color:#888;">${p.nota}</span>` : ''}</td>
+            <td class="right money">${money(toNum(p.monto))}</td>
+          </tr>`,
+            )
+            .join('')
+        : `<tr><td colspan="5" style="text-align:center;padding:16px;color:#aaa;">Sin cobros de deuda registrados en este turno</td></tr>`
+
+    const filasEgresos =
+      egresos.length > 0
+        ? egresos
+            .map(
+              (e) => `
+          <tr>
+            <td class="center">${horaCorta(e.creado_en)}</td>
+            <td>${e.concepto}${e.proveedor_nombre ? ` <span style="color:#888;">(${e.proveedor_nombre})</span>` : ''}</td>
+            <td class="center">${e.metodo}</td>
+            <td class="right money">${money(toNum(e.monto))}</td>
+          </tr>`,
+            )
+            .join('')
+        : `<tr><td colspan="4" style="text-align:center;padding:16px;color:#aaa;">Sin egresos registrados en este turno</td></tr>`
 
     const html = `<!DOCTYPE html>
 <html lang="es">
@@ -130,22 +206,30 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
     .badge-yape { background:#eff6ff; color:#1d4ed8; }
     .badge-fiado { background:#fffbeb; color:#92400e; }
     .summary-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4mm; margin-bottom:4mm; }
+    .summary-grid.dos { grid-template-columns:1fr 1fr; }
     .summary-card { border-radius:8px; padding:4mm; border:1px solid; }
     .summary-card.efectivo { background:#ecfdf5; border-color:#a7f3d0; }
     .summary-card.yape { background:#eff6ff; border-color:#bfdbfe; }
     .summary-card.fiado { background:#fffbeb; border-color:#fde68a; }
+    .summary-card.cobro { background:#f0fdfa; border-color:#99f6e4; }
+    .summary-card.egreso { background:#fef2f2; border-color:#fecaca; }
     .summary-label { font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; opacity:0.65; margin-bottom:1.5mm; }
     .summary-value { font-size:13pt; font-weight:900; }
     .summary-card.efectivo .summary-value { color:#065f46; }
     .summary-card.yape .summary-value { color:#1d4ed8; }
     .summary-card.fiado .summary-value { color:#92400e; }
+    .summary-card.cobro .summary-value { color:#0f766e; }
+    .summary-card.egreso .summary-value { color:#b91c1c; }
     .total-card { background:#0e0e0d; color:#fff; border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; margin-bottom:3mm; }
     .total-label { font-size:9pt; font-weight:700; opacity:0.7; }
     .total-value { font-size:16pt; font-weight:900; }
-    .balance-card { border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; background:${diferenciaFondo}; border:1.5px solid ${diferenciaBorde}; }
+    .balance-card { border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; background:${diferenciaFondo}; border:1.5px solid ${diferenciaBorde}; margin-bottom:3mm; }
     .balance-desc { font-size:8.5pt; color:#666; }
     .balance-desc b { color:#1a1a1a; }
     .balance-value { font-size:15pt; font-weight:900; color:${diferenciaColor}; }
+    .neto-card { background:#fffbeb; border:1.5px solid #fde68a; border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; }
+    .neto-label { font-size:9pt; font-weight:700; color:#92400e; }
+    .neto-value { font-size:16pt; font-weight:900; color:#92400e; }
     .footer { margin-top:10mm; border-top:1px solid #e5e5e5; padding-top:4mm; text-align:center; font-size:8pt; color:#aaa; line-height:1.7; }
     @page { size:A4; margin:0; }
     @media print { body { padding:14mm 13mm 16mm; } }
@@ -183,16 +267,40 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
     </table>
   </div>
   <div class="section">
+    <div class="section-title">Cobros de Deuda del Turno (Ingreso por Cobranza)</div>
+    <table>
+      <thead><tr><th class="center">Hora</th><th>Cliente</th><th class="center">Método</th><th>Nota</th><th class="right">Monto</th></tr></thead>
+      <tbody>${filasCobros}</tbody>
+      ${cobros.length > 0 ? `<tfoot><tr><td colspan="4"><b>TOTAL COBRADO (${cobros.length} abono${cobros.length === 1 ? '' : 's'})</b></td><td class="right">${money(totalCobros)}</td></tr></tfoot>` : ''}
+    </table>
+  </div>
+  <div class="section">
+    <div class="section-title">Egresos del Turno</div>
+    <table>
+      <thead><tr><th class="center">Hora</th><th>Concepto</th><th class="center">Método</th><th class="right">Monto</th></tr></thead>
+      <tbody>${filasEgresos}</tbody>
+      ${egresos.length > 0 ? `<tfoot><tr><td colspan="3"><b>TOTAL EGRESOS (${egresos.length})</b></td><td class="right">${money(totalEgresos)}</td></tr></tfoot>` : ''}
+    </table>
+  </div>
+  <div class="section">
     <div class="section-title">Resumen Financiero del Día</div>
     <div class="summary-grid">
-      <div class="summary-card efectivo"><div class="summary-label">Efectivo</div><div class="summary-value">${money(totalEfectivo)}</div></div>
-      <div class="summary-card yape"><div class="summary-label">Yape</div><div class="summary-value">${money(totalYape)}</div></div>
-      <div class="summary-card fiado"><div class="summary-label">Fiado</div><div class="summary-value">${money(totalFiado)}</div></div>
+      <div class="summary-card efectivo"><div class="summary-label">Ventas Efectivo</div><div class="summary-value">${money(totalEfectivo)}</div></div>
+      <div class="summary-card yape"><div class="summary-label">Ventas Yape</div><div class="summary-value">${money(totalYape)}</div></div>
+      <div class="summary-card fiado"><div class="summary-label">Ventas Fiado</div><div class="summary-value">${money(totalFiado)}</div></div>
     </div>
     <div class="total-card"><span class="total-label">TOTAL VENDIDO (Efectivo + Yape + Fiado)</span><span class="total-value">${money(totalGeneral)}</span></div>
+    <div class="summary-grid dos">
+      <div class="summary-card cobro"><div class="summary-label">Cobros de Deuda</div><div class="summary-value">${money(totalCobros)}</div></div>
+      <div class="summary-card egreso"><div class="summary-label">Egresos</div><div class="summary-value">- ${money(totalEgresos)}</div></div>
+    </div>
     <div class="balance-card">
       <div class="balance-desc">Efectivo esperado: <b>${money(esperadoEfectivo)}</b> &nbsp;·&nbsp; Contado: <b>${money(toNum(montoRealContado))}</b> &nbsp;·&nbsp; <b>${diferencia >= 0 ? 'Sobrante' : 'Faltante'}</b></div>
       <div class="balance-value">${diferencia >= 0 ? '+' : ''}${money(diferencia)}</div>
+    </div>
+    <div class="neto-card">
+      <div class="neto-label">BALANCE FINAL NETO<br/><span style="font-weight:500;font-size:7.5pt;">(Fondo inicial + Ventas directas + Cobros de deuda) − Egresos</span></div>
+      <div class="neto-value">${money(balanceNeto)}</div>
     </div>
   </div>
   <div class="footer">${BRAND.nombre} &nbsp;·&nbsp; Reporte generado el ${fechaHora(ahora)} &nbsp;·&nbsp; Documento de uso interno</div>
@@ -288,12 +396,8 @@ export function Caja() {
     }
     setProcesando(true)
     try {
-      const { ventasVinculadas, montoVinculado } = await abrir(monto)
-      toast.exito(
-        ventasVinculadas > 0
-          ? `Caja abierta. Se vincularon ${ventasVinculadas} venta${ventasVinculadas === 1 ? '' : 's'} de hoy (${money(montoVinculado)}) registradas sin caja.`
-          : 'Caja abierta correctamente',
-      )
+      const resultado = await abrir(monto)
+      toast.exito(mensajeVinculacion(resultado))
       setAbrirOpen(false)
       setMontoInicial('')
     } catch (e) {
@@ -410,9 +514,9 @@ export function Caja() {
 
       {/* ── KPIs de la caja activa ── */}
       {caja ? (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
 
-          {/* Tarjeta "Caja Abierta" */}
+          {/* Tarjeta "Caja Abierta" — balance neto del turno */}
           <div className="col-span-2 lg:col-span-1 card p-4">
             <div className="mb-3 flex items-center gap-2">
               <span className="relative flex size-2">
@@ -424,34 +528,47 @@ export function Caja() {
               </span>
             </div>
             <p className="tabular font-display text-2xl font-bold text-ink-900">
-              {money(toNum(caja.total_efectivo) + toNum(caja.total_yape))}
+              {money(balanceNetoDe(caja))}
             </p>
             <p className="mt-1 text-xs text-ink-400">
-              Efectivo + Yape · desde {horaCorta(caja.abierta_en)}
+              Balance neto (fondo + ventas + cobros − egresos) · desde {horaCorta(caja.abierta_en)}
             </p>
           </div>
 
           <KpiCaja
             icon={DollarSign}
-            label="Efectivo"
+            label="Ventas efectivo"
             valor={money(toNum(caja.total_efectivo))}
             color="text-accent-700"
             bg="bg-accent-50"
           />
           <KpiCaja
             icon={Smartphone}
-            label="Yape"
+            label="Ventas Yape"
             valor={money(toNum(caja.total_yape))}
             color="text-blue-700"
             bg="bg-blue-50"
           />
           <KpiCaja
             icon={HandCoins}
-            label="Fiado"
+            label="Ventas fiado"
             valor={money(toNum(caja.total_fiado))}
             color="text-amber-700"
             bg="bg-amber-50"
-            className="col-span-2 lg:col-span-1"
+          />
+          <KpiCaja
+            icon={ArrowDownLeft}
+            label="Cobros de deuda"
+            valor={money(toNum(caja.total_cobros_efectivo) + toNum(caja.total_cobros_yape))}
+            color="text-teal-700"
+            bg="bg-teal-50"
+          />
+          <KpiCaja
+            icon={ArrowUpRight}
+            label="Egresos"
+            valor={money(toNum(caja.total_egresos_efectivo) + toNum(caja.total_egresos_otros))}
+            color="text-red-700"
+            bg="bg-red-50"
           />
         </div>
       ) : (
@@ -513,11 +630,9 @@ export function Caja() {
             <ul className="divide-y divide-ink-100">
               {historialFiltrado.map((h: CajaRegistro) => {
                 // Conversión explícita para evitar suma de strings
-                const hMonto    = toNum(h.monto_inicial)
-                const hEfectivo = toNum(h.total_efectivo)
-                const hYape     = toNum(h.total_yape)
                 const hReal     = toNum(h.monto_real)
-                const esperado  = hMonto + hEfectivo
+                const esperado  = esperadoEfectivoDe(h)
+                const hBalance  = balanceNetoDe(h)
 
                 return (
                   <li key={h.id} className="flex items-center justify-between px-4 py-3">
@@ -547,7 +662,7 @@ export function Caja() {
                     <div className="flex items-center gap-2">
                       <div className="text-right">
                         <p className="tabular text-sm font-bold text-ink-900">
-                          {money(hMonto + hEfectivo + hYape)}
+                          {money(hBalance)}
                         </p>
                         <div className="mt-0.5">
                           {h.estado === 'abierta' ? (
@@ -669,17 +784,20 @@ export function Caja() {
               </span>
             </div>
             <div className="rounded-xl bg-ink-50 p-4 text-sm space-y-1.5">
-              <InfoRow k="Fondo inicial"    v={money(toNum(caja.monto_inicial))} />
-              <InfoRow k="Ventas efectivo"  v={money(toNum(caja.total_efectivo))} />
+              <InfoRow k="Fondo inicial"       v={money(toNum(caja.monto_inicial))} />
+              <InfoRow k="Ventas efectivo"     v={money(toNum(caja.total_efectivo))} />
+              <InfoRow k="Cobros efectivo"     v={money(toNum(caja.total_cobros_efectivo))} />
+              <InfoRow k="Egresos efectivo"    v={'- ' + money(toNum(caja.total_egresos_efectivo))} />
               <div className="border-t border-ink-200 pt-1.5">
-                <InfoRow
-                  k="Efectivo esperado"
-                  v={money(toNum(caja.monto_inicial) + toNum(caja.total_efectivo))}
-                  bold
-                />
+                <InfoRow k="Efectivo esperado" v={money(esperadoEfectivoDe(caja))} bold />
               </div>
-              <InfoRow k="Ventas Yape"  v={money(toNum(caja.total_yape))} />
-              <InfoRow k="Ventas Fiado" v={money(toNum(caja.total_fiado))} />
+              <InfoRow k="Ventas Yape"      v={money(toNum(caja.total_yape))} />
+              <InfoRow k="Cobros Yape"      v={money(toNum(caja.total_cobros_yape))} />
+              <InfoRow k="Ventas Fiado"     v={money(toNum(caja.total_fiado))} />
+              <InfoRow k="Egresos (otros)"  v={'- ' + money(toNum(caja.total_egresos_otros))} />
+              <div className="border-t border-ink-200 pt-1.5">
+                <InfoRow k="Balance neto del turno" v={money(balanceNetoDe(caja))} bold />
+              </div>
             </div>
             <label className="block">
               <span className="label mb-1.5 block">¿Cuánto efectivo hay en caja? (S/)</span>
@@ -696,7 +814,7 @@ export function Caja() {
             </label>
             {montoReal !== '' && !isNaN(parseFloat(montoReal)) && (
               <DifCard
-                esperado={toNum(caja.monto_inicial) + toNum(caja.total_efectivo)}
+                esperado={esperadoEfectivoDe(caja)}
                 real={parseFloat(montoReal)}
               />
             )}
@@ -739,12 +857,19 @@ export function Caja() {
             <div className="rounded-xl bg-ink-50 p-4 text-sm space-y-1.5">
               <InfoRow k="Fondo inicial"      v={money(resumen.monto_inicial)} />
               <InfoRow k="Ventas efectivo"    v={money(resumen.total_efectivo)} />
+              <InfoRow k="Cobros efectivo"    v={money(resumen.total_cobros_efectivo)} />
+              <InfoRow k="Egresos efectivo"   v={'- ' + money(resumen.total_egresos_efectivo)} />
               <div className="border-t border-ink-200 pt-1.5">
                 <InfoRow k="Efectivo esperado" v={money(resumen.esperado_efectivo)} bold />
               </div>
               <InfoRow k="Efectivo contado" v={money(resumen.ingresado_real)} bold />
-              <InfoRow k="Ventas Yape"      v={money(resumen.total_yape)} />
-              <InfoRow k="Ventas Fiado"     v={money(resumen.total_fiado)} />
+              <InfoRow k="Ventas Yape"     v={money(resumen.total_yape)} />
+              <InfoRow k="Cobros Yape"     v={money(resumen.total_cobros_yape)} />
+              <InfoRow k="Ventas Fiado"    v={money(resumen.total_fiado)} />
+              <InfoRow k="Egresos (otros)" v={'- ' + money(resumen.total_egresos_otros)} />
+              <div className="border-t border-ink-200 pt-1.5">
+                <InfoRow k="Balance final neto" v={money(resumen.balance_neto)} bold />
+              </div>
             </div>
             <DifCard esperado={resumen.esperado_efectivo} real={resumen.ingresado_real} />
             {resumen.diferencia !== 0 && (

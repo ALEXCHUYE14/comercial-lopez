@@ -12,22 +12,31 @@ import {
   MessageCircle,
   Copy,
   AlertTriangle,
+  Banknote,
+  Smartphone,
 } from 'lucide-react'
 import { useClientes, DIAS_DEUDA_VENCIDA } from '@/hooks/useClientes'
 import { useAuth } from '@/context/AuthContext'
+import { useCajaCtx } from '@/context/CajaContext'
 import { BRAND } from '@/config/brand'
 import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cx } from '@/utils/format'
-import type { ClienteCredito, PagoCredito } from '@/types/database'
+import type { ClienteCredito, MetodoAbono, PagoCredito } from '@/types/database'
 
 const VACIO = { nombre: '', telefono: '', direccion: '', limite_credito: '100' }
+
+const METODOS_ABONO: { id: MetodoAbono; label: string; icon: typeof Banknote }[] = [
+  { id: 'efectivo', label: 'Efectivo', icon: Banknote },
+  { id: 'yape', label: 'Yape', icon: Smartphone },
+]
 
 export function Clientes() {
   const { clientes, diasSinPago, cargando, crear, actualizar, eliminar, registrarAbono, obtenerPagos } =
     useClientes()
   const { esAdmin } = useAuth()
+  const { caja, recargar: recargarCaja } = useCajaCtx()
   const toast = useToast()
 
   const [formOpen, setFormOpen] = useState(false)
@@ -41,6 +50,7 @@ export function Clientes() {
   const [f, setF] = useState(VACIO)
   const [montoAbono, setMontoAbono] = useState('')
   const [notaAbono, setNotaAbono] = useState('')
+  const [metodoAbono, setMetodoAbono] = useState<MetodoAbono>('efectivo')
 
   const totalDeuda = useMemo(
     () => clientes.reduce((s, c) => s + c.deuda_actual, 0),
@@ -118,11 +128,22 @@ export function Clientes() {
     }
     setGuardando(true)
     try {
-      await registrarAbono(abonoCliente.id, monto, notaAbono.trim() || null)
-      toast.exito(`Abono de ${money(monto)} registrado`)
+      await registrarAbono(abonoCliente.id, monto, notaAbono.trim() || null, metodoAbono, caja?.id ?? null)
+      if (caja?.id) {
+        // El RPC ya acredito el cobro a la caja en el servidor de forma
+        // atomica — se recarga el contexto para reflejar el nuevo total
+        // (Efectivo/Yape/Cobros) en el resto de la app sin esperar polling.
+        await recargarCaja()
+        toast.exito(`Abono de ${money(monto)} registrado y acreditado a la caja actual`)
+      } else {
+        toast.exito(
+          `Abono de ${money(monto)} registrado. No hay caja abierta: no se reflejará en ningún cierre de caja.`,
+        )
+      }
       setAbonoCliente(null)
       setMontoAbono('')
       setNotaAbono('')
+      setMetodoAbono('efectivo')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error al registrar abono')
     } finally {
@@ -311,7 +332,7 @@ export function Clientes() {
                       </IconBtn>
                     )}
                     {esAdmin && c.deuda_actual > 0 && (
-                      <IconBtn title="Registrar abono" onClick={() => { setAbonoCliente(c); setMontoAbono(''); setNotaAbono('') }}>
+                      <IconBtn title="Registrar abono" onClick={() => { setAbonoCliente(c); setMontoAbono(''); setNotaAbono(''); setMetodoAbono('efectivo') }}>
                         <ArrowDownLeft className="size-4" />
                       </IconBtn>
                     )}
@@ -350,7 +371,7 @@ export function Clientes() {
                       )}
                       {esAdmin && c.deuda_actual > 0 && (
                         <button
-                          onClick={() => { setAbonoCliente(c); setMontoAbono(''); setNotaAbono('') }}
+                          onClick={() => { setAbonoCliente(c); setMontoAbono(''); setNotaAbono(''); setMetodoAbono('efectivo') }}
                           className="flex items-center gap-1 rounded-lg bg-accent-50 px-2.5 py-1.5 text-xs font-semibold text-accent-700"
                         >
                           <ArrowDownLeft className="size-3.5" /> Abonar
@@ -473,6 +494,26 @@ export function Clientes() {
                 <span className="tabular text-ink-700">{money(abonoCliente.limite_credito)}</span>
               </div>
             </div>
+            <div>
+              <p className="label mb-2">Método de pago</p>
+              <div className="grid grid-cols-2 gap-2">
+                {METODOS_ABONO.map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => setMetodoAbono(id)}
+                    className={cx(
+                      'flex flex-col items-center gap-1.5 rounded-xl border px-3 py-3 text-xs font-semibold transition focusable',
+                      metodoAbono === id
+                        ? 'border-accent-500 bg-accent-50 text-accent-700'
+                        : 'border-ink-200 text-ink-500 hover:border-ink-300',
+                    )}
+                  >
+                    <Icon className="size-5" />
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <Campo label="Monto del abono (S/) *">
               <input
                 type="number"
@@ -500,6 +541,17 @@ export function Clientes() {
                   </button>
                 ))}
             </div>
+            {caja ? (
+              <div className="rounded-xl bg-accent-50 px-3.5 py-2.5 text-xs text-accent-700">
+                Se acreditará como <strong>ingreso por cobranza</strong> a tu caja actual, abierta
+                desde {fechaHora(caja.abierta_en)}.
+              </div>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700">
+                No tienes una caja abierta: el abono se registrará igual, pero no se reflejará en
+                ningún cierre de caja.
+              </div>
+            )}
             <Campo label="Nota (opcional)">
               <input
                 className="input"
@@ -530,7 +582,9 @@ export function Clientes() {
               >
                 <div>
                   {p.nota && <p className="text-sm font-semibold text-ink-800">{p.nota}</p>}
-                  <p className="text-xs text-ink-400">{fechaHora(p.creado_en)}</p>
+                  <p className="text-xs text-ink-400">
+                    {fechaHora(p.creado_en)} · {p.metodo === 'yape' ? 'Yape' : 'Efectivo'}
+                  </p>
                 </div>
                 <span className="tabular font-display text-sm font-bold text-accent-700">
                   + {money(p.monto)}

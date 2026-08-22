@@ -15,6 +15,9 @@ export type CategoriaEgreso =
   | 'mantenimiento'
   | 'otro'
 export type MetodoEgreso = 'efectivo' | 'yape' | 'transferencia' | 'otro'
+// Metodos admitidos para un abono/cobro de deuda de cliente (subconjunto de
+// MetodoPago: "fiado" no tiene sentido para cancelar una deuda existente).
+export type MetodoAbono = 'efectivo' | 'yape'
 
 export type Perfil = {
   id: string
@@ -121,6 +124,8 @@ export type PagoCredito = {
   monto: number
   nota: string | null
   cajero_id: string | null
+  caja_id: string | null
+  metodo: MetodoAbono
   creado_en: string
 }
 
@@ -132,6 +137,13 @@ export type CajaRegistro = {
   total_efectivo: number
   total_yape: number
   total_fiado: number
+  // Cobros de deuda (abonos de clientes) acreditados a esta caja, por metodo.
+  total_cobros_efectivo: number
+  total_cobros_yape: number
+  // Egresos restados de esta caja, por metodo (efectivo afecta el arqueo
+  // fisico; el resto — yape/transferencia/otro — solo el balance neto).
+  total_egresos_efectivo: number
+  total_egresos_otros: number
   monto_real: number | null
   estado: EstadoCaja
   abierta_en: string
@@ -196,6 +208,7 @@ export type Egreso = {
   notas: string | null
   usuario_id: string | null
   usuario_nombre: string | null
+  caja_id: string | null
   creado_en: string
 }
 
@@ -245,8 +258,30 @@ export interface Database {
         Returns: ClienteCredito
       }
       registrar_abono_cliente: {
-        Args: { p_cliente_id: string; p_monto: number; p_nota: string | null }
+        Args: {
+          p_cliente_id: string
+          p_monto: number
+          p_nota: string | null
+          p_metodo: MetodoAbono
+          p_caja_id: string | null
+        }
         Returns: PagoCredito
+      }
+      registrar_egreso: {
+        Args: {
+          p_concepto: string
+          p_categoria: CategoriaEgreso
+          p_monto: number
+          p_metodo: string
+          p_proveedor_id: string | null
+          p_notas: string | null
+          p_caja_id: string | null
+        }
+        Returns: Egreso
+      }
+      eliminar_egreso: {
+        Args: { p_egreso_id: string }
+        Returns: void
       }
       ajustar_stock: {
         Args: {

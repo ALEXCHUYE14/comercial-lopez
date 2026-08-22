@@ -34,19 +34,30 @@ export function useEgresos(desde: Date, hasta: Date) {
     monto: number
     metodo: MetodoEgreso
     proveedor_id: string | null
-    proveedor_nombre: string | null
     notas: string | null
-    usuario_id: string | null
-    usuario_nombre: string | null
+    caja_id: string | null
   }): Promise<Egreso> {
-    const { data, error } = await supabase.from('egresos').insert(e).select().single()
+    // El RPC valida (concepto, monto > 0, efectivo disponible en caja si
+    // corresponde) y — si se indica una caja abierta — resta el monto de su
+    // saldo disponible de inmediato, todo en una unica transaccion atomica.
+    const { data, error } = await supabase.rpc('registrar_egreso', {
+      p_concepto: e.concepto,
+      p_categoria: e.categoria,
+      p_monto: e.monto,
+      p_metodo: e.metodo,
+      p_proveedor_id: e.proveedor_id,
+      p_notas: e.notas,
+      p_caja_id: e.caja_id,
+    })
     if (error) throw error
     setEgresos((prev) => [data, ...prev])
     return data
   }
 
   async function eliminar(id: string): Promise<void> {
-    const { error } = await supabase.from('egresos').delete().eq('id', id)
+    // El RPC revierte el total acreditado en la caja (si sigue abierta)
+    // antes de borrar el registro, para no dejar el cierre descuadrado.
+    const { error } = await supabase.rpc('eliminar_egreso', { p_egreso_id: id })
     if (error) throw error
     setEgresos((prev) => prev.filter((x) => x.id !== id))
   }

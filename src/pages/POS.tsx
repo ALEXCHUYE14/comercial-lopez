@@ -17,6 +17,7 @@ import { useClientes } from '@/hooks/useClientes'
 import { useKeyboardScanner } from '@/hooks/useKeyboardScanner'
 import { useAuth } from '@/context/AuthContext'
 import { useCajaCtx } from '@/context/CajaContext'
+import { mensajeVinculacion } from '@/hooks/useCaja'
 import { supabase } from '@/lib/supabase'
 import { Button, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
@@ -118,12 +119,8 @@ export function POS() {
   async function confirmarAbrirCaja() {
     setAbriendoCaja(true)
     try {
-      const { ventasVinculadas, montoVinculado } = await abrirCaja(parseFloat(montoInicial) || 0)
-      toast.exito(
-        ventasVinculadas > 0
-          ? `Caja abierta. Se vincularon ${ventasVinculadas} venta${ventasVinculadas === 1 ? '' : 's'} de hoy (${money(montoVinculado)}) registradas sin caja.`
-          : 'Caja abierta. Ya puedes vender.',
-      )
+      const resultado = await abrirCaja(parseFloat(montoInicial) || 0)
+      toast.exito(mensajeVinculacion(resultado))
       setAbrirCajaOpen(false)
       setMontoInicial('')
     } catch (e) {

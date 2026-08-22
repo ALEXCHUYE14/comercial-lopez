@@ -3,6 +3,7 @@ import { Plus, Trash2, Wallet, ArrowDownCircle, ChevronDown } from 'lucide-react
 import { useEgresos, ETIQUETA_CATEGORIA_EGRESO, ETIQUETA_METODO_EGRESO } from '@/hooks/useEgresos'
 import { useProveedores } from '@/hooks/useProveedores'
 import { useAuth } from '@/context/AuthContext'
+import { useCajaCtx } from '@/context/CajaContext'
 import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
@@ -51,7 +52,8 @@ export function Egresos() {
   const hastaRef = useRef(finHoy())
   const { egresos, cargando, registrar, eliminar, totalMes } = useEgresos(desdeRef.current, hastaRef.current)
   const { proveedores } = useProveedores()
-  const { esAdmin, perfil, session } = useAuth()
+  const { esAdmin } = useAuth()
+  const { caja, recargar: recargarCaja } = useCajaCtx()
   const toast = useToast()
 
   const [formOpen, setFormOpen] = useState(false)
@@ -70,6 +72,15 @@ export function Egresos() {
     setF({ concepto: '', categoria: 'otro', monto: '', metodo: 'efectivo', proveedor_id: '', notas: '' })
   }
 
+  // Efectivo fisico disponible en la caja actual: fondo inicial + ventas
+  // efectivo + cobros efectivo - egresos efectivo ya registrados. Se usa
+  // para advertir en el formulario antes de que el RPC rechace el egreso.
+  const efectivoDisponible = caja
+    ? Number(caja.monto_inicial) + Number(caja.total_efectivo) +
+      Number(caja.total_cobros_efectivo) - Number(caja.total_egresos_efectivo)
+    : 0
+  const montoIngresado = parseFloat(f.monto) || 0
+
   async function guardar() {
     if (!f.concepto.trim()) {
       toast.error('Escribe el concepto del gasto.')
@@ -78,6 +89,10 @@ export function Egresos() {
     const monto = parseFloat(f.monto) || 0
     if (monto <= 0) {
       toast.error('El monto debe ser mayor a 0.')
+      return
+    }
+    if (caja && f.metodo === 'efectivo' && monto > efectivoDisponible) {
+      toast.error(`El efectivo disponible en caja es ${money(efectivoDisponible)}.`)
       return
     }
     const proveedor = proveedores.find((p) => p.id === f.proveedor_id) ?? null
@@ -89,12 +104,20 @@ export function Egresos() {
         monto,
         metodo: f.metodo,
         proveedor_id: proveedor?.id ?? null,
-        proveedor_nombre: proveedor?.nombre ?? null,
         notas: f.notas.trim() || null,
-        usuario_id: session?.user?.id ?? null,
-        usuario_nombre: perfil?.nombre ?? null,
+        caja_id: caja?.id ?? null,
       })
-      toast.exito('Egreso registrado')
+      if (caja?.id) {
+        // El RPC ya resto el monto del saldo de la caja en el servidor de
+        // forma atomica — se recarga el contexto para reflejar el nuevo
+        // saldo disponible en el resto de la app sin esperar polling.
+        await recargarCaja()
+      }
+      toast.exito(
+        caja?.id
+          ? 'Egreso registrado y descontado de la caja actual'
+          : 'Egreso registrado. No hay caja abierta: no se reflejará en ningún cierre de caja.',
+      )
       setFormOpen(false)
       resetForm()
     } catch (e) {
@@ -110,6 +133,7 @@ export function Egresos() {
     setEliminandoId(id)
     try {
       await eliminar(id)
+      await recargarCaja()
       toast.exito('Egreso eliminado')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo eliminar el egreso')
@@ -324,6 +348,25 @@ export function Egresos() {
               <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-ink-400" />
             </div>
           </Campo>
+
+          {caja ? (
+            <div className="rounded-xl bg-red-50 px-3.5 py-2.5 text-xs text-red-700">
+              Se descontará de inmediato de tu caja actual
+              {f.metodo === 'efectivo' && (
+                <> · Efectivo disponible: <strong>{money(efectivoDisponible)}</strong></>
+              )}
+              {f.metodo === 'efectivo' && montoIngresado > efectivoDisponible && (
+                <p className="mt-1 font-semibold">
+                  El monto supera el efectivo disponible en caja — no se podrá registrar.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700">
+              No tienes una caja abierta: el egreso se registrará igual, pero no se reflejará en
+              ningún cierre de caja.
+            </div>
+          )}
 
           {f.categoria === 'proveedor' && (
             <Campo label="Proveedor (opcional)">
