@@ -823,6 +823,16 @@ $$;
 -- abierta — acredita el monto como "Cobro de deuda" en esa sesion de caja,
 -- todo en una unica transaccion (la funcion completa o no hace nada).
 -- ----------------------------------------------------------------------------
+-- El parametro p_metodo y p_caja_id son nuevos (version anterior solo tenia
+-- p_cliente_id, p_monto, p_nota): "create or replace" NO reemplaza una
+-- funcion cuando cambia la lista de tipos de parametros, sino que crea una
+-- SEGUNDA funcion sobrecargada con el mismo nombre. Hay que tumbar la firma
+-- vieja explicitamente primero (mismo patron que ya usa ajustar_stock mas
+-- abajo) para evitar dos versiones de registrar_abono_cliente coexistiendo,
+-- lo que confunde al cache de esquema de PostgREST y rompe las llamadas
+-- desde el frontend con "Could not find the function ... in the schema cache".
+drop function if exists public.registrar_abono_cliente(uuid, numeric, text);
+
 create or replace function public.registrar_abono_cliente(
   p_cliente_id uuid,
   p_monto      numeric,
