@@ -26,7 +26,7 @@ export default defineConfig({
                 ],
             },
             workbox: {
-                globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+                globPatterns: ['**/*.{js,css,html,svg,png,woff2,mp3}'],
                 // Las fotos de negocio (logo/tienda) no se precachean: pueden pesar
                 // varios MB y no son parte del app shell; se sirven por red normal.
                 globIgnores: ['**/img/**'],

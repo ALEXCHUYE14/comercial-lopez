@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode'
 import { CameraOff, Loader2, Keyboard, ZoomIn } from 'lucide-react'
+import { sonidoScanner } from '@/utils/beep'
 
 interface Props {
   onScan: (codigo: string) => void
@@ -138,6 +139,7 @@ export function CameraScanner({ onScan, activo }: Props) {
               return
             ultimoScan.current = { codigo: texto, t: ahora }
             if ('vibrate' in navigator) navigator.vibrate(40)
+            sonidoScanner()
             onScan(texto)
           },
           () => {

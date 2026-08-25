@@ -46,3 +46,32 @@ export function beepError(): void {
 
 /** Alias de compatibilidad (usada por CameraScanner y useKeyboardScanner) */
 export const beepEscaner = beepExito
+
+// --- Sonido grabado del escaner (camara) ---------------------------------
+// A diferencia de los beeps sintetizados de arriba (que indican un
+// resultado de negocio: producto encontrado/no encontrado), este es el
+// "click" audible que confirma que la camara decodifico un codigo de
+// barras/QR, igual que un lector fisico de supermercado. Se dispara en
+// CameraScanner en el instante mismo de la lectura, antes de saber si el
+// producto existe en el sistema.
+let audioScanner: HTMLAudioElement | null = null
+
+/** Reproduce public/audio/scanner.mp3. Nunca lanza: un fallo de audio
+ * (autoplay bloqueado, archivo ausente, navegador sin soporte) no debe
+ * interrumpir el flujo de escaneo. */
+export function sonidoScanner(): void {
+  try {
+    if (!audioScanner) {
+      audioScanner = new Audio(`${import.meta.env.BASE_URL}audio/scanner.mp3`)
+      audioScanner.preload = 'auto'
+    }
+    // Reinicia el playback por si el usuario escanea muy rapido y el clip
+    // anterior todavia estaba sonando.
+    audioScanner.currentTime = 0
+    void audioScanner.play().catch(() => {
+      // Autoplay bloqueado u otro error de reproduccion: silenciar.
+    })
+  } catch {
+    // Entorno sin soporte de Audio: silenciar.
+  }
+}
