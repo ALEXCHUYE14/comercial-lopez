@@ -27,7 +27,7 @@ import { PaymentModal } from '@/components/pos/PaymentModal'
 import { Receipt } from '@/components/pos/Receipt'
 import { money, cx, cantidad, etiquetaUnidad } from '@/utils/format'
 import { BRAND } from '@/config/brand'
-import { beepExito, beepError } from '@/utils/beep'
+import { beepExito, beepError, desbloquearAudioScanner } from '@/utils/beep'
 import type { ItemCarrito, MetodoPago, ModalidadVenta, Producto, Venta } from '@/types/database'
 
 export function POS() {
@@ -83,6 +83,15 @@ export function POS() {
 
   // Lector fisico siempre activo (emulacion teclado) en desktop
   useKeyboardScanner(onScan)
+
+  // Desbloquea scanner.mp3 dentro del propio clic que abre la camara (ver
+  // desbloquearAudioScanner en utils/beep): en Safari/iOS, reproducir un
+  // <audio> por script solo funciona si antes se reprodujo dentro de un
+  // gesto del usuario como este.
+  function abrirCamara() {
+    desbloquearAudioScanner()
+    setCamAbierta(true)
+  }
 
   // --- Productos a granel: piden la cantidad exacta (admite decimales) ---
   function abrirGranel(p: Producto) {
@@ -284,7 +293,7 @@ export function POS() {
             variant="outline"
             size="sm"
             className="lg:hidden"
-            onClick={() => setCamAbierta(true)}
+            onClick={abrirCamara}
           >
             <Camera className="size-4" /> Escanear
           </Button>
@@ -305,7 +314,7 @@ export function POS() {
           <Button
             variant="outline"
             className="hidden lg:inline-flex"
-            onClick={() => setCamAbierta(true)}
+            onClick={abrirCamara}
           >
             <ScanLine className="size-[18px]" /> Camara
           </Button>

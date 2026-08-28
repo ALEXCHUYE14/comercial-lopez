@@ -7,7 +7,7 @@ import { CameraScanner } from '@/components/pos/CameraScanner'
 import { useProductoImagen } from '@/hooks/useProductoImagen'
 import { supabase } from '@/lib/supabase'
 import { cx } from '@/utils/format'
-import { beepExito } from '@/utils/beep'
+import { beepExito, desbloquearAudioScanner } from '@/utils/beep'
 import type { Categoria, Producto, TipoVenta } from '@/types/database'
 
 const UNIDADES_GRANEL = ['kg', 'g', 'litro', 'ml']
@@ -246,7 +246,12 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado }:
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setScannerSku((v) => !v)}
+              onClick={() => {
+                // Desbloquea scanner.mp3 dentro del propio clic (necesario
+                // en Safari/iOS: ver desbloquearAudioScanner en utils/beep).
+                if (!scannerSku) desbloquearAudioScanner()
+                setScannerSku((v) => !v)
+              }}
               className={cx(
                 'shrink-0 transition',
                 scannerSku && 'border-accent-400 bg-accent-50 text-accent-700',

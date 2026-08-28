@@ -56,22 +56,63 @@ export const beepEscaner = beepExito
 // producto existe en el sistema.
 let audioScanner: HTMLAudioElement | null = null
 
+function obtenerAudioScanner(): HTMLAudioElement {
+  if (!audioScanner) {
+    audioScanner = new Audio(`${import.meta.env.BASE_URL}audio/scanner.mp3`)
+    audioScanner.preload = 'auto'
+  }
+  return audioScanner
+}
+
 /** Reproduce public/audio/scanner.mp3. Nunca lanza: un fallo de audio
  * (autoplay bloqueado, archivo ausente, navegador sin soporte) no debe
  * interrumpir el flujo de escaneo. */
 export function sonidoScanner(): void {
   try {
-    if (!audioScanner) {
-      audioScanner = new Audio(`${import.meta.env.BASE_URL}audio/scanner.mp3`)
-      audioScanner.preload = 'auto'
-    }
+    const audio = obtenerAudioScanner()
     // Reinicia el playback por si el usuario escanea muy rapido y el clip
     // anterior todavia estaba sonando.
-    audioScanner.currentTime = 0
-    void audioScanner.play().catch(() => {
+    audio.currentTime = 0
+    void audio.play().catch(() => {
       // Autoplay bloqueado u otro error de reproduccion: silenciar.
     })
   } catch {
     // Entorno sin soporte de Audio: silenciar.
+  }
+}
+
+/**
+ * "Desbloquea" la reproduccion de scanner.mp3 para el resto de la sesion.
+ * Safari/iOS solo deja reproducir un <audio> por script si play() se llamo
+ * antes al menos una vez de forma sincronica dentro de un gesto del usuario
+ * (clic/tap); despues de eso, ese mismo elemento se puede reproducir desde
+ * cualquier callback asincrono (como la deteccion de un codigo dentro de
+ * CameraScanner, que ocurre bastante despues del clic que abrio la camara).
+ * Debe llamarse en el propio manejador onClick del boton que abre la
+ * camara (nunca en un efecto o promesa) para que cuente como gesto.
+ */
+export function desbloquearAudioScanner(): void {
+  try {
+    const audio = obtenerAudioScanner()
+    audio.muted = true
+    const promesa = audio.play()
+    if (promesa && typeof promesa.then === 'function') {
+      promesa
+        .then(() => {
+          audio.pause()
+          audio.currentTime = 0
+          audio.muted = false
+        })
+        .catch(() => {
+          audio.muted = false
+        })
+    } else {
+      audio.pause()
+      audio.currentTime = 0
+      audio.muted = false
+    }
+  } catch {
+    // Silenciar: si esto falla, sonidoScanner() simplemente no sonara mas
+    // tarde en navegadores estrictos, pero el resto del flujo sigue igual.
   }
 }

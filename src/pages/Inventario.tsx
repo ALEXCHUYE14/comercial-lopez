@@ -22,6 +22,7 @@ import { StockAdjust } from '@/components/inventory/StockAdjust'
 import { ScanEntrada } from '@/components/inventory/ScanEntrada'
 import { money, cx, fechaHora, cantidad, etiquetaUnidad, ymd } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
+import { desbloquearAudioScanner } from '@/utils/beep'
 import type { MovimientoInventario, Producto } from '@/types/database'
 
 export function Inventario() {
@@ -124,7 +125,16 @@ export function Inventario() {
             <Download className="size-4" /> <span className="hidden sm:inline">Descargar</span>
           </Button>
           {esAdmin && (
-            <Button variant="outline" size="sm" onClick={() => setEscaneando(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // Desbloquea scanner.mp3 dentro del propio clic (necesario
+                // en Safari/iOS: ver desbloquearAudioScanner en utils/beep).
+                desbloquearAudioScanner()
+                setEscaneando(true)
+              }}
+            >
               <ScanLine className="size-4" /> <span className="hidden sm:inline">Escanear</span>
             </Button>
           )}
