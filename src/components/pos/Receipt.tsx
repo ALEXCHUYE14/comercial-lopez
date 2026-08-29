@@ -1,10 +1,13 @@
-import { Printer, Check } from 'lucide-react'
+import { useState } from 'react'
+import { Printer, Bluetooth, Check } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cantidad } from '@/utils/format'
 import { BRAND } from '@/config/brand'
-import { construirTicketHtml, imprimirTicketHtml, type TicketLinea } from '@/utils/ticket'
+import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
+import { construirTicketEscPos } from '@/utils/escpos'
+import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import type { ItemCarrito, Venta } from '@/types/database'
 
 const ETIQUETA: Record<string, string> = {
@@ -37,37 +40,63 @@ interface Props {
 
 export function Receipt({ open, onClose, venta, items }: Props) {
   const toast = useToast()
+  const [imprimiendoBt, setImprimiendoBt] = useState(false)
 
-  function imprimir() {
+  function datosTicket(): { datos: TicketDatos; lineas: TicketLinea[] } {
     const lineas: TicketLinea[] = items.map((i) => ({
       cantidadTexto: etiquetaCantidad(i),
       nombre: i.producto.nombre,
       tag: i.modalidad === 'caja' ? 'Caja' : i.modalidad === 'saco' ? 'Saco' : undefined,
       montoTexto: money(precioItem(i) * i.cantidad),
     }))
+    const datos: TicketDatos = {
+      numero: venta.numero,
+      creadoEn: venta.creado_en,
+      cajeroNombre: venta.cajero_nombre,
+      subtotal: venta.subtotal,
+      descuento: venta.descuento,
+      igv: venta.igv,
+      total: venta.total,
+      metodo: venta.metodo,
+      pagoRecibido: venta.pago_recibido,
+      vuelto: venta.vuelto,
+      clienteNombre: venta.cliente_nombre,
+      anulada: venta.anulada,
+    }
+    return { datos, lineas }
+  }
 
-    const html = construirTicketHtml(
-      {
-        numero: venta.numero,
-        creadoEn: venta.creado_en,
-        cajeroNombre: venta.cajero_nombre,
-        subtotal: venta.subtotal,
-        descuento: venta.descuento,
-        igv: venta.igv,
-        total: venta.total,
-        metodo: venta.metodo,
-        pagoRecibido: venta.pago_recibido,
-        vuelto: venta.vuelto,
-        clienteNombre: venta.cliente_nombre,
-        anulada: venta.anulada,
-      },
-      lineas,
-    )
-
+  // Impresion por cable (o Bluetooth emparejado como impresora del sistema
+  // operativo, si el equipo lo permite): usa el dialogo de impresion nativo.
+  function imprimir() {
+    const { datos, lineas } = datosTicket()
     try {
-      imprimirTicketHtml(html)
+      imprimirTicketHtml(construirTicketHtml(datos, lineas))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo abrir la ventana de impresión')
+    }
+  }
+
+  // Impresion por Bluetooth directa (Web Bluetooth), sin pasar por el
+  // dialogo del sistema — ver utils/bluetoothPrinter.ts. Solo disponible en
+  // Chrome/Edge (Android, Windows, Mac); en Safari/iPhone se avisa al cajero
+  // que use la impresion por cable.
+  async function imprimirBluetooth() {
+    if (!bluetoothDisponible()) {
+      toast.error(
+        'Este navegador no soporta impresión Bluetooth. Usa Chrome/Edge en Android, Windows o Mac, o imprime por cable.',
+      )
+      return
+    }
+    setImprimiendoBt(true)
+    try {
+      const { datos, lineas } = datosTicket()
+      await imprimirPorBluetooth(construirTicketEscPos(datos, lineas))
+      toast.exito('Ticket enviado a la impresora Bluetooth')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
+    } finally {
+      setImprimiendoBt(false)
     }
   }
 
@@ -77,11 +106,21 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       onClose={onClose}
       maxWidth="max-w-sm"
       footer={
-        <div className="flex gap-2">
-          <Button variant="outline" className="flex-1" onClick={imprimir}>
-            <Printer className="size-4" /> Imprimir ticket
-          </Button>
-          <Button variant="secondary" className="flex-1" onClick={onClose}>
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={imprimir}>
+              <Printer className="size-4" /> Imprimir (cable)
+            </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              loading={imprimiendoBt}
+              onClick={imprimirBluetooth}
+            >
+              <Bluetooth className="size-4" /> Bluetooth
+            </Button>
+          </div>
+          <Button variant="secondary" className="w-full" onClick={onClose}>
             Nueva venta
           </Button>
         </div>

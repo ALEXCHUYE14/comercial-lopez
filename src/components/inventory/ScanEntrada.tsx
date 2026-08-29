@@ -5,6 +5,7 @@ import { CameraScanner } from '@/components/pos/CameraScanner'
 import { useKeyboardScanner } from '@/hooks/useKeyboardScanner'
 import { supabase } from '@/lib/supabase'
 import { cx } from '@/utils/format'
+import { beepExito, beepError } from '@/utils/beep'
 import type { Producto } from '@/types/database'
 
 interface Props {
@@ -47,6 +48,7 @@ export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
     const hora = new Date().toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
     if (!producto) {
+      beepError()
       agregarRegistro({ id: crypto.randomUUID(), ok: false, texto: `No encontrado: ${codigo}`, hora })
       procesando.current.delete(codigo)
       return
@@ -61,6 +63,7 @@ export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
       })
       if (error) throw error
       if ('vibrate' in navigator) navigator.vibrate(40)
+      beepExito()
       agregarRegistro({
         id: crypto.randomUUID(),
         ok: true,
@@ -69,6 +72,7 @@ export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
       })
       onListo()
     } catch (e) {
+      beepError()
       agregarRegistro({
         id: crypto.randomUUID(),
         ok: false,

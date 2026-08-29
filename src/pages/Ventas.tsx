@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Search,
   Printer,
+  Bluetooth,
   Receipt as ReceiptIcon,
   Filter,
   X,
@@ -27,7 +28,9 @@ import {
   cx,
 } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
-import { construirTicketHtml, imprimirTicketHtml, type TicketLinea } from '@/utils/ticket'
+import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
+import { construirTicketEscPos } from '@/utils/escpos'
+import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import type { DetalleVenta, MetodoPago, Perfil, Venta } from '@/types/database'
 
 // ── Rangos de fecha alineados a calendario (semana/quincena/mes) ─────────────
@@ -638,6 +641,7 @@ function TicketReprint({
   const [detalle, setDetalle] = useState<DetalleVenta[]>([])
   const [cargando, setCargando] = useState(false)
   const [anulando, setAnulando] = useState(false)
+  const [imprimiendoBt, setImprimiendoBt] = useState(false)
 
   useEffect(() => {
     if (!venta) return
@@ -676,37 +680,58 @@ function TicketReprint({
   // lo contiene tiene animaciones con transform, que rompen el
   // position:fixed en el que se apoyaba el truco de "ocultar todo menos el
   // ticket" via CSS.
-  function imprimir() {
-    if (!venta) return
+  function datosTicket(): { datos: TicketDatos; lineas: TicketLinea[] } | null {
+    if (!venta) return null
     const lineas: TicketLinea[] = detalle.map((d) => ({
       cantidadTexto: Number.isInteger(d.cantidad) ? `${d.cantidad}x` : cantidad(d.cantidad),
       nombre: d.producto_nombre,
       tag: d.modalidad === 'caja' ? 'Caja' : d.modalidad === 'saco' ? 'Saco' : undefined,
       montoTexto: money(Number(d.subtotal)),
     }))
+    const datos: TicketDatos = {
+      numero: venta.numero,
+      creadoEn: venta.creado_en,
+      cajeroNombre: venta.cajero_nombre,
+      subtotal: Number(venta.subtotal),
+      descuento: Number(venta.descuento),
+      igv: Number(venta.igv),
+      total: Number(venta.total),
+      metodo: venta.metodo,
+      pagoRecibido: Number(venta.pago_recibido),
+      vuelto: Number(venta.vuelto),
+      clienteNombre: venta.cliente_nombre,
+      anulada: venta.anulada,
+    }
+    return { datos, lineas }
+  }
 
-    const html = construirTicketHtml(
-      {
-        numero: venta.numero,
-        creadoEn: venta.creado_en,
-        cajeroNombre: venta.cajero_nombre,
-        subtotal: Number(venta.subtotal),
-        descuento: Number(venta.descuento),
-        igv: Number(venta.igv),
-        total: Number(venta.total),
-        metodo: venta.metodo,
-        pagoRecibido: Number(venta.pago_recibido),
-        vuelto: Number(venta.vuelto),
-        clienteNombre: venta.cliente_nombre,
-        anulada: venta.anulada,
-      },
-      lineas,
-    )
-
+  function imprimir() {
+    const t = datosTicket()
+    if (!t) return
     try {
-      imprimirTicketHtml(html)
+      imprimirTicketHtml(construirTicketHtml(t.datos, t.lineas))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo abrir la ventana de impresión')
+    }
+  }
+
+  async function imprimirBluetooth() {
+    const t = datosTicket()
+    if (!t) return
+    if (!bluetoothDisponible()) {
+      toast.error(
+        'Este navegador no soporta impresión Bluetooth. Usa Chrome/Edge en Android, Windows o Mac, o imprime por cable.',
+      )
+      return
+    }
+    setImprimiendoBt(true)
+    try {
+      await imprimirPorBluetooth(construirTicketEscPos(t.datos, t.lineas))
+      toast.exito('Ticket enviado a la impresora Bluetooth')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
+    } finally {
+      setImprimiendoBt(false)
     }
   }
 
@@ -718,23 +743,36 @@ function TicketReprint({
       onClose={onClose}
       maxWidth="max-w-sm"
       footer={
-        <div className="flex gap-2">
-          {esAdmin && !venta.anulada && (
-            <Button variant="danger" onClick={anular} loading={anulando}>
-              <Ban className="size-4" /> Anular
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={imprimir}
+              disabled={cargando}
+            >
+              <Printer className="size-4" /> Cable
             </Button>
-          )}
-          <Button
-            variant="outline"
-            className="flex-1"
-            onClick={imprimir}
-            disabled={cargando}
-          >
-            <Printer className="size-4" /> Imprimir
-          </Button>
-          <Button variant="secondary" className="flex-1" onClick={onClose}>
-            Cerrar
-          </Button>
+            <Button
+              variant="outline"
+              className="flex-1"
+              onClick={imprimirBluetooth}
+              disabled={cargando}
+              loading={imprimiendoBt}
+            >
+              <Bluetooth className="size-4" /> Bluetooth
+            </Button>
+          </div>
+          <div className="flex gap-2">
+            {esAdmin && !venta.anulada && (
+              <Button variant="danger" className="flex-1" onClick={anular} loading={anulando}>
+                <Ban className="size-4" /> Anular
+              </Button>
+            )}
+            <Button variant="secondary" className="flex-1" onClick={onClose}>
+              Cerrar
+            </Button>
+          </div>
         </div>
       }
     >

@@ -45,8 +45,6 @@ export interface TicketDatos {
 }
 
 export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): string {
-  const logoUrl = `${window.location.origin}/img/logo.png`
-
   const filas = lineas
     .map(
       (l) => `
@@ -105,21 +103,6 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
       print-color-adjust: exact;
       text-rendering: optimizeLegibility;
       -webkit-font-smoothing: antialiased;
-    }
-
-    /* Logo — en escala de grises: un logo a color impreso en una termica
-       (que solo tiene negro/blanco) suele salir con manchas ilegibles; en
-       gris + contraste se ve nitido y profesional en cualquier impresora. */
-    .logo-wrap {
-      text-align: center;
-      margin-bottom: 2mm;
-    }
-    .logo {
-      max-width: 50mm;
-      max-height: 22mm;
-      width: auto;
-      height: auto;
-      filter: grayscale(1) contrast(1.25);
     }
 
     /* Encabezado */
@@ -254,10 +237,6 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
   </style>
 </head>
 <body>
-
-  <div class="logo-wrap">
-    <img class="logo" src="${logoUrl}" alt="${BRAND.nombre}" onerror="this.remove()"/>
-  </div>
 
   <div class="header">
     <div class="nombre-negocio">${BRAND.nombre.toUpperCase()}</div>

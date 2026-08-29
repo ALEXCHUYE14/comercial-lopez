@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Printer, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck } from 'lucide-react'
+import { Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck } from 'lucide-react'
 import { Card, Button, Badge, Spinner } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { useAuth } from '@/context/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { BRAND } from '@/config/brand'
 import { cx } from '@/utils/format'
+import { construirTicketEscPos } from '@/utils/escpos'
+import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import type { Perfil, Rol } from '@/types/database'
 
 const ETIQUETA_ROL: Record<Rol, string> = {
@@ -130,8 +132,49 @@ function GestionUsuarios() {
   )
 }
 
+// Ticket de prueba compartido por "Imprimir por cable" y "Probar Bluetooth":
+// mismos datos, para que ambas vias se puedan comparar en igualdad de
+// condiciones.
+const VENTA_PRUEBA = {
+  numero: 0,
+  creadoEn: new Date().toISOString(),
+  cajeroNombre: 'Prueba',
+  subtotal: 34.32,
+  descuento: 0,
+  igv: 6.18,
+  total: 40.5,
+  metodo: 'efectivo',
+  pagoRecibido: 40.5,
+  vuelto: 0,
+}
+const LINEAS_PRUEBA = [
+  { cantidadTexto: '1x', nombre: 'Producto A', montoTexto: 'S/ 10.00' },
+  { cantidadTexto: '1x', nombre: 'Producto B', montoTexto: 'S/ 25.50' },
+  { cantidadTexto: '1x', nombre: 'Producto C', montoTexto: 'S/ 5.00' },
+]
+
 export function Configuracion() {
+  const toast = useToast()
   const [estadoImpresion, setEstadoImpresion] = useState<'idle' | 'ok' | 'error'>('idle')
+  const [probandoBt, setProbandoBt] = useState(false)
+
+  async function probarImpresionBluetooth() {
+    if (!bluetoothDisponible()) {
+      toast.error(
+        'Este navegador no soporta impresión Bluetooth. Usa Chrome/Edge en Android, Windows o Mac (Safari/iPhone no lo soportan).',
+      )
+      return
+    }
+    setProbandoBt(true)
+    try {
+      await imprimirPorBluetooth(construirTicketEscPos(VENTA_PRUEBA, LINEAS_PRUEBA))
+      toast.exito('Ticket de prueba enviado a la impresora Bluetooth')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
+    } finally {
+      setProbandoBt(false)
+    }
+  }
 
   function probarImpresion() {
     const w = window.open('', '_blank', 'width=380,height=520,menubar=no,toolbar=no')
@@ -217,14 +260,18 @@ export function Configuracion() {
           <div className="flex items-start gap-3 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
             <Info className="mt-0.5 size-4 shrink-0" />
             <span>
-              El botón abre una ventana con un ticket de prueba y lanza la impresión automáticamente.
-              Asegúrate de que los popups estén habilitados para este sitio.
+              "Imprimir por cable" abre una ventana con un ticket de prueba y lanza el diálogo de
+              impresión del navegador (sirve para impresoras USB, de red, o Bluetooth ya instaladas
+              como impresora del sistema). Asegúrate de que los popups estén habilitados para este sitio.
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button variant="secondary" onClick={probarImpresion}>
-              <Printer className="size-4" /> Imprimir ticket de prueba
+              <Printer className="size-4" /> Imprimir por cable
+            </Button>
+            <Button variant="secondary" onClick={probarImpresionBluetooth} loading={probandoBt}>
+              <Bluetooth className="size-4" /> Probar Bluetooth
             </Button>
             {estadoImpresion === 'ok' && (
               <span className="flex items-center gap-1.5 text-sm font-medium text-accent-700">
@@ -239,11 +286,21 @@ export function Configuracion() {
           </div>
 
           <div className="rounded-xl bg-ink-50 p-4 text-sm text-ink-600">
-            <p className="mb-2 font-semibold text-ink-800">Para impresoras Bluetooth:</p>
+            <p className="mb-2 font-semibold text-ink-800">Bluetooth directo (recomendado en tablet/celular):</p>
+            <ol className="list-decimal list-inside space-y-1 text-ink-500">
+              <li>Enciende la impresora térmica y activa su modo Bluetooth</li>
+              <li>Toca <strong>"Probar Bluetooth"</strong> (o el botón Bluetooth al imprimir un ticket)</li>
+              <li>Elige la impresora en la lista que muestra el navegador — no hace falta instalar ningún driver</li>
+              <li>Disponible solo en <strong>Chrome o Edge</strong> (Android, Windows o Mac); Safari/iPhone no lo soportan</li>
+            </ol>
+          </div>
+
+          <div className="rounded-xl bg-ink-50 p-4 text-sm text-ink-600">
+            <p className="mb-2 font-semibold text-ink-800">Para impresoras Bluetooth instaladas como impresora del sistema:</p>
             <ol className="list-decimal list-inside space-y-1 text-ink-500">
               <li>Vincula la impresora al dispositivo desde Configuración → Bluetooth</li>
               <li>Instala el driver o app de la impresora si es necesario</li>
-              <li>Selecciona la impresora en el diálogo de impresión del navegador</li>
+              <li>Selecciona la impresora en el diálogo de "Imprimir por cable"</li>
               <li>Ajusta el tamaño de papel a <strong>80 mm</strong> (papel térmico estándar)</li>
             </ol>
           </div>
