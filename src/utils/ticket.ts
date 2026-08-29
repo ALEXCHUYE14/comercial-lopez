@@ -73,6 +73,12 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
     ? `<div class="anulada">*** COMPROBANTE ANULADO ***</div>`
     : ''
 
+  // numero=0 es la señal de una venta registrada offline (ver
+  // hooks/useVentasOffline.ts) que aun no tiene el numero correlativo real
+  // que le asigna el servidor al sincronizar.
+  const numeroTicket =
+    venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket (pendiente de sincronizar)'
+
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -242,7 +248,7 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
     <div class="nombre-negocio">${BRAND.nombre.toUpperCase()}</div>
     <div class="sub-header">${fechaHora(venta.creadoEn)}</div>
     <div class="sub-header">Cajero: ${venta.cajeroNombre ?? '-'}</div>
-    <div class="ticket-num">Ticket N° ${venta.numero}</div>
+    <div class="ticket-num">${numeroTicket}</div>
   </div>
 
   ${anuladaBanner}

@@ -157,7 +157,9 @@ export function construirTicketEscPos(venta: TicketDatos, lineas: TicketLinea[])
   t.tituloGrande(BRAND.nombre.toUpperCase())
   t.centro(fechaHora(venta.creadoEn))
   t.centro(`Cajero: ${venta.cajeroNombre ?? '-'}`)
-  t.centro(`Ticket N° ${venta.numero}`)
+  // numero=0 = venta registrada offline, aun sin numero correlativo real
+  // (ver hooks/useVentasOffline.ts).
+  t.centro(venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket (pendiente de sincronizar)')
 
   if (venta.anulada) {
     t.saltar(1).negrita('*** COMPROBANTE ANULADO ***')

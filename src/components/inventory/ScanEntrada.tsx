@@ -13,6 +13,9 @@ interface Props {
   onClose: () => void
   productos: Producto[]
   onListo: () => void
+  /** Se llama cuando un código escaneado no coincide con ningún producto,
+   * para ofrecer crearlo al vuelo con ese SKU ya precargado. */
+  onNoEncontrado?: (codigo: string) => void
 }
 
 interface Registro {
@@ -20,6 +23,8 @@ interface Registro {
   ok: boolean
   texto: string
   hora: string
+  /** Solo en registros "no encontrado": el código crudo, para el botón "Crear producto". */
+  codigoNoEncontrado?: string
 }
 
 /**
@@ -29,7 +34,7 @@ interface Registro {
  * escaneando caja por caja. El anti-rebote del CameraScanner (1.2s) evita
  * que la misma lectura se cuente dos veces mientras el codigo sigue en cuadro.
  */
-export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
+export function ScanEntrada({ open, onClose, productos, onListo, onNoEncontrado }: Props) {
   const [registros, setRegistros] = useState<Registro[]>([])
   const procesando = useRef(new Set<string>())
 
@@ -49,7 +54,13 @@ export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
 
     if (!producto) {
       beepError()
-      agregarRegistro({ id: crypto.randomUUID(), ok: false, texto: `No encontrado: ${codigo}`, hora })
+      agregarRegistro({
+        id: crypto.randomUUID(),
+        ok: false,
+        texto: `No encontrado: ${codigo}`,
+        hora,
+        codigoNoEncontrado: codigo.trim(),
+      })
       procesando.current.delete(codigo)
       return
     }
@@ -119,6 +130,14 @@ export function ScanEntrada({ open, onClose, productos, onListo }: Props) {
                   <XCircle className="size-3.5 shrink-0" />
                 )}
                 <span className="min-w-0 flex-1 truncate font-medium">{r.texto}</span>
+                {r.codigoNoEncontrado && onNoEncontrado && (
+                  <button
+                    onClick={() => onNoEncontrado(r.codigoNoEncontrado!)}
+                    className="shrink-0 rounded-md bg-red-100 px-1.5 py-0.5 font-semibold text-red-800 hover:bg-red-200"
+                  >
+                    Crear producto
+                  </button>
+                )}
                 <span className="shrink-0 tabular opacity-60">{r.hora}</span>
               </li>
             ))}

@@ -280,6 +280,19 @@ create table if not exists public.ventas (
   creado_en       timestamptz not null default now()
 );
 
+-- Migracion en caliente: clave de idempotencia opcional para el modo offline
+-- del POS (ver src/utils/offlineDB.ts). El frontend genera un UUID por venta
+-- ANTES de saber si hay conexion; si la venta se encola sin internet y el
+-- reintento posterior de sincronizacion llega a ejecutarse dos veces (ej. el
+-- primer intento SI llego al servidor pero la respuesta nunca volvio al
+-- cliente por un corte de red), esta clave evita registrar la misma venta
+-- por duplicado — ver el chequeo al inicio del RPC registrar_venta.
+alter table public.ventas add column if not exists idempotency_key text;
+do $$ begin
+  create unique index idx_ventas_idempotency_key on public.ventas (idempotency_key)
+    where idempotency_key is not null;
+exception when duplicate_table then null; end $$;
+
 create index if not exists idx_ventas_fecha  on public.ventas (creado_en desc);
 create index if not exists idx_ventas_cajero on public.ventas (cajero_id);
 create index if not exists idx_ventas_metodo on public.ventas (metodo);
@@ -338,6 +351,13 @@ create table if not exists public.movimientos_inventario (
 alter table public.movimientos_inventario alter column cantidad     type double precision using cantidad::double precision;
 alter table public.movimientos_inventario alter column stock_previo type double precision using stock_previo::double precision;
 alter table public.movimientos_inventario alter column stock_nuevo  type double precision using stock_nuevo::double precision;
+
+-- Migracion en caliente: nombre del usuario que hizo el movimiento, guardado
+-- tal cual (denormalizado) igual que egresos.usuario_nombre — no se resuelve
+-- con un join a perfiles en el momento de leer el Kardex porque la politica
+-- RLS de perfiles solo deja ver la fila propia o a un administrador, asi que
+-- un cajero viendo el Kardex no podria leer el nombre de otro usuario.
+alter table public.movimientos_inventario add column if not exists usuario_nombre text;
 
 create index if not exists idx_mov_producto on public.movimientos_inventario (producto_id, creado_en desc);
 
@@ -504,13 +524,14 @@ create policy product_images_delete on storage.objects for delete
 -- RPC 1: REGISTRAR VENTA (transaccional: stock + kardex + caja)
 -- ----------------------------------------------------------------------------
 create or replace function public.registrar_venta(
-  p_items         jsonb,         -- [{ producto_id, cantidad, precio_unitario, modalidad }]
-  p_metodo        metodo_pago,
-  p_descuento     numeric  default 0,
-  p_pago_recibido numeric  default 0,
-  p_caja_id       uuid     default null,
-  p_cliente_id    uuid     default null,
-  p_tasa_igv      numeric  default 0.18
+  p_items            jsonb,         -- [{ producto_id, cantidad, precio_unitario, modalidad }]
+  p_metodo           metodo_pago,
+  p_descuento        numeric  default 0,
+  p_pago_recibido    numeric  default 0,
+  p_caja_id          uuid     default null,
+  p_cliente_id       uuid     default null,
+  p_tasa_igv         numeric  default 0.18,
+  p_idempotency_key  text     default null
 )
 returns public.ventas
 language plpgsql
@@ -538,6 +559,16 @@ declare
 begin
   if jsonb_array_length(p_items) = 0 then
     raise exception 'El carrito esta vacio.';
+  end if;
+
+  -- Reintento de una venta encolada offline (ver p_idempotency_key arriba):
+  -- si esta clave ya genero una venta antes, se devuelve tal cual en vez de
+  -- volver a descontar stock / registrar kardex por segunda vez.
+  if p_idempotency_key is not null then
+    select * into v_venta from public.ventas where idempotency_key = p_idempotency_key;
+    if found then
+      return v_venta;
+    end if;
   end if;
 
   select nombre into v_nombre from public.perfiles where id = auth.uid();
@@ -598,14 +629,33 @@ begin
   v_igv      := round(v_total - v_base, 2);
 
   -- 3) Cabecera de la venta
-  insert into public.ventas (
-    cajero_id, cajero_nombre, caja_id, cliente_id, cliente_nombre,
-    subtotal, descuento, igv, total, metodo, pago_recibido, vuelto
-  ) values (
-    auth.uid(), v_nombre, p_caja_id, p_cliente_id, v_cli_nombre,
-    v_subtotal, coalesce(p_descuento, 0), v_igv, v_total,
-    p_metodo, p_pago_recibido, round(greatest(p_pago_recibido - v_total, 0), 2)
-  ) returning * into v_venta;
+  -- El bloque exception cubre una carrera muy angosta pero real en el modo
+  -- offline: dos reintentos de sincronizacion de la MISMA venta encolada
+  -- corriendo casi al mismo tiempo (ej. el usuario toca "reintentar" justo
+  -- cuando el retry automatico ya estaba en vuelo). Sin esto, el segundo en
+  -- llegar reventaria con "duplicate key" en vez de simplemente devolver la
+  -- venta que el primero ya creo.
+  begin
+    insert into public.ventas (
+      cajero_id, cajero_nombre, caja_id, cliente_id, cliente_nombre,
+      subtotal, descuento, igv, total, metodo, pago_recibido, vuelto,
+      idempotency_key
+    ) values (
+      auth.uid(), v_nombre, p_caja_id, p_cliente_id, v_cli_nombre,
+      v_subtotal, coalesce(p_descuento, 0), v_igv, v_total,
+      p_metodo, p_pago_recibido, round(greatest(p_pago_recibido - v_total, 0), 2),
+      p_idempotency_key
+    ) returning * into v_venta;
+  exception when unique_violation then
+    if p_idempotency_key is null then
+      raise;
+    end if;
+    select * into v_venta from public.ventas where idempotency_key = p_idempotency_key;
+    if not found then
+      raise;
+    end if;
+    return v_venta;
+  end;
 
   -- 4) Detalle + descuento de stock + kardex
   for v_item in select * from jsonb_array_elements(p_items)
@@ -639,11 +689,11 @@ begin
 
     insert into public.movimientos_inventario (
       producto_id, producto_nombre, tipo, cantidad,
-      stock_previo, stock_nuevo, motivo, usuario_id
+      stock_previo, stock_nuevo, motivo, usuario_id, usuario_nombre
     ) values (
       v_producto.id, v_producto.nombre, 'venta', -v_unidades,
       v_producto.stock_actual, v_producto.stock_actual - v_unidades,
-      'Venta #' || v_venta.numero, auth.uid()
+      'Venta #' || v_venta.numero, auth.uid(), v_nombre
     );
   end loop;
 
@@ -670,8 +720,9 @@ language plpgsql
 security definer set search_path = public
 as $$
 declare
-  v_prod  public.productos%rowtype;
-  v_nuevo double precision;
+  v_prod    public.productos%rowtype;
+  v_nuevo   double precision;
+  v_nombre  text;
 begin
   if not public.es_admin() then
     raise exception 'Solo un administrador puede ajustar el stock.';
@@ -689,12 +740,14 @@ begin
   update public.productos set stock_actual = v_nuevo where id = p_producto_id
     returning * into v_prod;
 
+  select nombre into v_nombre from public.perfiles where id = auth.uid();
+
   insert into public.movimientos_inventario (
     producto_id, producto_nombre, tipo, cantidad,
-    stock_previo, stock_nuevo, motivo, usuario_id
+    stock_previo, stock_nuevo, motivo, usuario_id, usuario_nombre
   ) values (
     p_producto_id, v_prod.nombre, p_tipo, p_cantidad,
-    v_nuevo - p_cantidad, v_nuevo, p_motivo, auth.uid()
+    v_nuevo - p_cantidad, v_nuevo, p_motivo, auth.uid(), v_nombre
   );
 
   return v_prod;
@@ -710,9 +763,10 @@ language plpgsql
 security definer set search_path = public
 as $$
 declare
-  v_venta  public.ventas%rowtype;
-  v_det    record;
-  v_prod   public.productos%rowtype;
+  v_venta   public.ventas%rowtype;
+  v_det     record;
+  v_prod    public.productos%rowtype;
+  v_nombre  text;
 begin
   if not public.es_admin() then
     raise exception 'Solo un administrador puede anular ventas.';
@@ -721,6 +775,8 @@ begin
   select * into v_venta from public.ventas where id = p_venta_id for update;
   if not found then raise exception 'Venta no encontrada.'; end if;
   if v_venta.anulada then raise exception 'La venta ya esta anulada.'; end if;
+
+  select nombre into v_nombre from public.perfiles where id = auth.uid();
 
   for v_det in
     select * from public.detalle_ventas where venta_id = p_venta_id
@@ -738,11 +794,11 @@ begin
 
         insert into public.movimientos_inventario (
           producto_id, producto_nombre, tipo, cantidad,
-          stock_previo, stock_nuevo, motivo, usuario_id
+          stock_previo, stock_nuevo, motivo, usuario_id, usuario_nombre
         ) values (
           v_prod.id, v_prod.nombre, 'devolucion', v_det.unidades,
           v_prod.stock_actual - v_det.unidades, v_prod.stock_actual,
-          'Anulacion venta #' || v_venta.numero, auth.uid()
+          'Anulacion venta #' || v_venta.numero, auth.uid(), v_nombre
         );
       end if;
     end if;

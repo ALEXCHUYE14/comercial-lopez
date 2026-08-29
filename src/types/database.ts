@@ -78,6 +78,7 @@ export type Venta = {
   pago_recibido: number
   vuelto: number
   anulada: boolean
+  idempotency_key: string | null
   creado_en: string
 }
 
@@ -104,6 +105,7 @@ export type MovimientoInventario = {
   stock_nuevo: number
   motivo: string | null
   usuario_id: string | null
+  usuario_nombre: string | null
   creado_en: string
 }
 
@@ -250,6 +252,7 @@ export interface Database {
           p_caja_id: string | null
           p_cliente_id: string | null
           p_tasa_igv?: number
+          p_idempotency_key?: string | null
         }
         Returns: Venta
       }

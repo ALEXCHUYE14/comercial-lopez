@@ -10,11 +10,15 @@ import {
   Camera,
   Tag,
   LockOpen,
+  PackagePlus,
+  WifiOff,
+  RefreshCw,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
 import { useCarrito } from '@/hooks/useCarrito'
 import { useClientes } from '@/hooks/useClientes'
 import { useKeyboardScanner } from '@/hooks/useKeyboardScanner'
+import { useVentasOffline } from '@/hooks/useVentasOffline'
 import { useAuth } from '@/context/AuthContext'
 import { useCajaCtx } from '@/context/CajaContext'
 import { mensajeVinculacion } from '@/hooks/useCaja'
@@ -25,19 +29,43 @@ import { useToast } from '@/components/ui/Toast'
 import { CameraScanner } from '@/components/pos/CameraScanner'
 import { PaymentModal } from '@/components/pos/PaymentModal'
 import { Receipt } from '@/components/pos/Receipt'
+import { ProductForm } from '@/components/inventory/ProductForm'
 import { money, cx, cantidad, etiquetaUnidad } from '@/utils/format'
 import { BRAND } from '@/config/brand'
 import { beepExito, beepError, desbloquearAudioScanner } from '@/utils/beep'
+import { pareceErrorDeRed, type VentaOffline } from '@/utils/offlineDB'
 import type { ItemCarrito, MetodoPago, ModalidadVenta, Producto, Venta } from '@/types/database'
 
 export function POS() {
   const { productos, categorias, cargando } = useProductos()
   const { clientes } = useClientes()
-  const { perfil } = useAuth()
+  const { perfil, esAdmin } = useAuth()
   const nombreDisplay = perfil?.rol === 'administrador' ? BRAND.operador : (perfil?.nombre?.split(' ')[0] ?? 'Cajero')
-  const { caja, cargando: cajaCargando, abrir: abrirCaja, sumarVenta } = useCajaCtx()
+  const {
+    caja,
+    cargando: cajaCargando,
+    abrir: abrirCaja,
+    sumarVenta,
+    aplicarVentaLocal,
+    confirmarVentaRemota,
+  } = useCajaCtx()
   const toast = useToast()
   const carrito = useCarrito()
+
+  // Efecto secundario que falta aplicar cuando una venta ENCOLADA offline
+  // finalmente se sincroniza: acreditar su monto a la caja en el servidor.
+  // (El fiado esta excluido del modo offline — ver PaymentModal — asi que
+  // aqui nunca hace falta replicar registrar_cargo_fiado.)
+  const aplicarEfectosVentaSincronizada = useCallback(
+    async (venta: Venta, pendiente: VentaOffline) => {
+      if (pendiente.cajaId) {
+        await confirmarVentaRemota(pendiente.cajaId, pendiente.metodo, venta.total)
+      }
+    },
+    [confirmarVentaRemota],
+  )
+  const avisarSincronizacion = useCallback((mensaje: string) => toast.error(mensaje), [toast])
+  const ventasOffline = useVentasOffline(aplicarEfectosVentaSincronizada, avisarSincronizacion)
 
   const [busqueda, setBusqueda] = useState('')
   const [catSel, setCatSel] = useState<string | null>(null)
@@ -52,6 +80,13 @@ export function POS() {
   const [abriendoCaja, setAbriendoCaja] = useState(false)
   const [granelSel, setGranelSel] = useState<Producto | null>(null)
   const [cantGranel, setCantGranel] = useState('1')
+  // Alta rapida: cuando un escaneo (camara o lector fisico) no encuentra
+  // coincidencia y quien esta en caja es administrador, se ofrece crear el
+  // producto al vuelo en vez de solo mostrar el error — sin esto, un
+  // producto nuevo que aun no esta en el catalogo obliga a cortar la venta,
+  // ir a Inventario, crearlo, y volver.
+  const [codigoDesconocido, setCodigoDesconocido] = useState<string | null>(null)
+  const [crearProductoAbierto, setCrearProductoAbierto] = useState(false)
 
   // Nadie puede vender sin caja abierta — incluye al administrador. Antes
   // se eximia al admin, lo que permitia registrar ventas sin caja activa:
@@ -63,12 +98,18 @@ export function POS() {
   // --- Manejo de escaneo (camara o lector fisico) ---
   const onScan = useCallback(
     (codigo: string) => {
-      const prod = productos.find((p) => p.sku === codigo.trim())
+      const limpio = codigo.trim()
+      const prod = productos.find((p) => p.sku === limpio)
       if (!prod) {
         beepError()
         toast.error(`Código no encontrado: ${codigo}`)
+        // Solo el administrador puede dar de alta productos (RLS de
+        // "productos"); a un cajero regular no le serviria de nada ver el
+        // banner de "Crear producto" porque el guardado le fallaria igual.
+        if (esAdmin) setCodigoDesconocido(limpio)
         return
       }
+      setCodigoDesconocido(null)
       if (prod.stock_actual <= 0) {
         beepError()
         toast.error(`Sin stock: ${prod.nombre}`)
@@ -78,7 +119,7 @@ export function POS() {
       carrito.agregar(prod, 'unidad')
       toast.exito(`+ ${prod.nombre}`)
     },
-    [productos, carrito, toast],
+    [productos, carrito, toast, esAdmin],
   )
 
   // Lector fisico siempre activo (emulacion teclado) en desktop
@@ -139,7 +180,95 @@ export function POS() {
     }
   }
 
+  // Guarda la venta en la cola offline (ver hooks/useVentasOffline.ts):
+  // acredita el monto a la caja EN PANTALLA de inmediato (aplicarVentaLocal,
+  // sin llamar al servidor todavia) e imprime el ticket con el carrito ya
+  // conocido — el cajero puede seguir cobrando como si nada. El numero de
+  // comprobante definitivo lo asigna el servidor recien al sincronizar.
+  async function encolarOffline(metodo: 'efectivo' | 'yape', pagoRecibido: number) {
+    const clientId = crypto.randomUUID()
+    const pendiente: VentaOffline = {
+      clientId,
+      creadoEnLocal: new Date().toISOString(),
+      itemsCarrito: carrito.items,
+      metodo,
+      descuento: carrito.descuento,
+      pagoRecibido,
+      cajaId: caja?.id ?? null,
+      cajeroNombre: nombreDisplay,
+      totales: carrito.totales,
+      intentos: 0,
+    }
+    await ventasOffline.encolar(pendiente)
+    if (caja?.id) aplicarVentaLocal(caja.id, metodo, carrito.totales.total)
+
+    // Venta "sintetica" solo para mostrar/imprimir el ticket: numero=0 es la
+    // señal que ticket.ts / Receipt.tsx usan para mostrar "pendiente de
+    // sincronizar" en vez de un numero de comprobante que todavia no existe.
+    const ventaSintetica: Venta = {
+      id: clientId,
+      numero: 0,
+      cajero_id: null,
+      cajero_nombre: nombreDisplay,
+      caja_id: caja?.id ?? null,
+      cliente_id: null,
+      cliente_nombre: null,
+      subtotal: carrito.totales.subtotal,
+      descuento: carrito.totales.descuento,
+      igv: carrito.totales.igv,
+      total: carrito.totales.total,
+      metodo,
+      pago_recibido: pagoRecibido,
+      vuelto: Math.max(pagoRecibido - carrito.totales.total, 0),
+      anulada: false,
+      idempotency_key: clientId,
+      creado_en: pendiente.creadoEnLocal,
+    }
+    setItemsTicket(carrito.items)
+    setVentaHecha(ventaSintetica)
+    carrito.limpiar()
+    setPagoAbierto(false)
+    setCarritoMovil(false)
+    toast.info('Sin conexión: la venta se guardó en este dispositivo y se sincronizará sola cuando vuelva internet.')
+  }
+
+  // Descarta una venta offline que el servidor rechazo permanentemente al
+  // sincronizar (ver banner de abajo). Revierte el ajuste optimista que
+  // encolarOffline le habia aplicado a la caja en pantalla — de lo
+  // contrario, el total mostrado quedaria contando para siempre una venta
+  // que en realidad nunca se registro en el servidor.
+  async function descartarPendienteOffline(p: VentaOffline) {
+    if (p.cajaId) aplicarVentaLocal(p.cajaId, p.metodo, -p.totales.total)
+    await ventasOffline.descartar(p.clientId)
+  }
+
   async function cobrar(metodo: MetodoPago, pagoRecibido: number, clienteId?: string) {
+    // El fiado depende de validar en el servidor el limite de credito
+    // actualizado del cliente (otro dispositivo pudo haberle vendido al
+    // mismo cliente mientras este estaba offline) — nunca se encola.
+    // PaymentModal ya oculta la opcion "Fiado" sin conexion; este chequeo es
+    // el respaldo por si la conexion se cae justo entre elegir el metodo y
+    // confirmar el cobro.
+    if (metodo === 'fiado' && !navigator.onLine) {
+      toast.error('Fiado no está disponible sin conexión a internet. Usa efectivo o Yape.')
+      return
+    }
+
+    // Sin conexion desde antes de intentar (no solo "se cayo a mitad de
+    // camino"): no tiene sentido esperar a que el fetch truene por timeout,
+    // se encola directo.
+    if (!navigator.onLine && (metodo === 'efectivo' || metodo === 'yape')) {
+      setProcesando(true)
+      try {
+        await encolarOffline(metodo, pagoRecibido)
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'No se pudo guardar la venta sin conexión')
+      } finally {
+        setProcesando(false)
+      }
+      return
+    }
+
     setProcesando(true)
     try {
       const items = carrito.items.map((i) => ({
@@ -200,6 +329,19 @@ export function POS() {
         toast.exito('Venta registrada correctamente')
       }
     } catch (e) {
+      // Si el request nunca llego al servidor por falta de red, se encola en
+      // vez de mostrar un error y obligar al cajero a reintentar a mano.
+      // "fiado" ya quedo descartado arriba, asi que aca metodo es siempre
+      // efectivo/yape cuando se cumple esta condicion.
+      if ((metodo === 'efectivo' || metodo === 'yape') && pareceErrorDeRed(e)) {
+        try {
+          await encolarOffline(metodo, pagoRecibido)
+        } catch (e2) {
+          toast.error(e2 instanceof Error ? e2.message : 'No se pudo guardar la venta sin conexión')
+        }
+        setProcesando(false)
+        return
+      }
       const msg =
         e instanceof Error
           ? e.message
@@ -280,6 +422,66 @@ export function POS() {
 
   return (
     <div className="lg:grid lg:grid-cols-[1fr_22rem] lg:gap-6">
+      {/* Estado offline / cola de sincronizacion */}
+      {(!ventasOffline.online || ventasOffline.pendientes.length > 0) && (
+        <div className="mb-4 lg:col-span-2">
+          <div
+            className={cx(
+              'flex items-center gap-3 rounded-xl border px-4 py-3',
+              ventasOffline.online
+                ? 'border-amber-200 bg-amber-50 text-amber-800'
+                : 'border-red-200 bg-red-50 text-red-800',
+            )}
+          >
+            <WifiOff className="size-4 shrink-0" />
+            <p className="min-w-0 flex-1 text-sm">
+              {!ventasOffline.online && 'Sin conexión — las ventas se guardan en este dispositivo. '}
+              {ventasOffline.pendientes.length > 0 &&
+                `${ventasOffline.pendientes.length} venta${ventasOffline.pendientes.length === 1 ? '' : 's'} por sincronizar.`}
+            </p>
+            {ventasOffline.online && ventasOffline.pendientes.length > 0 && (
+              <button
+                onClick={() => ventasOffline.sincronizar()}
+                disabled={ventasOffline.sincronizando}
+                className="flex shrink-0 items-center gap-1.5 rounded-lg bg-white/70 px-2.5 py-1.5 text-xs font-semibold hover:bg-white disabled:opacity-50"
+              >
+                <RefreshCw className={cx('size-3.5', ventasOffline.sincronizando && 'animate-spin')} />
+                Reintentar
+              </button>
+            )}
+          </div>
+
+          {/* Ventas que el servidor SI rechazo al sincronizar (ej. el stock ya
+              no alcanzaba) — a diferencia de una simple falta de conexion,
+              estas no se van a resolver solas reintentando: alguien tiene que
+              revisarlas y descartarlas. */}
+          {ventasOffline.pendientes.some((p) => p.ultimoError) && (
+            <ul className="mt-2 space-y-1.5">
+              {ventasOffline.pendientes
+                .filter((p) => p.ultimoError)
+                .map((p) => (
+                  <li
+                    key={p.clientId}
+                    className="flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs text-red-800"
+                  >
+                    <span className="min-w-0 flex-1">
+                      Venta de {money(p.totales.total)} ({p.itemsCarrito.length} producto
+                      {p.itemsCarrito.length === 1 ? '' : 's'}) no se pudo sincronizar:{' '}
+                      <b>{p.ultimoError}</b>
+                    </span>
+                    <button
+                      onClick={() => descartarPendienteOffline(p)}
+                      className="shrink-0 rounded-lg bg-red-600 px-2.5 py-1 font-semibold text-white hover:bg-red-700"
+                    >
+                      Descartar
+                    </button>
+                  </li>
+                ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {/* ---------------- Catalogo ---------------- */}
       <section>
         <div className="mb-4 flex items-center justify-between gap-3">
@@ -298,6 +500,29 @@ export function POS() {
             <Camera className="size-4" /> Escanear
           </Button>
         </div>
+
+        {/* Alta rapida: codigo escaneado sin coincidencia (solo administrador) */}
+        {codigoDesconocido && (
+          <div className="mb-3 flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 animate-fade-up">
+            <PackagePlus className="size-4 shrink-0 text-amber-600" />
+            <p className="min-w-0 flex-1 truncate text-sm text-amber-800">
+              Código <span className="font-mono font-semibold">{codigoDesconocido}</span> no está
+              en el catálogo.
+            </p>
+            <button
+              onClick={() => setCrearProductoAbierto(true)}
+              className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700"
+            >
+              Crear producto
+            </button>
+            <button
+              onClick={() => setCodigoDesconocido(null)}
+              className="shrink-0 text-amber-500 hover:text-amber-700"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        )}
 
         {/* Buscador + scan desktop */}
         <div className="mb-3 flex gap-2">
@@ -470,6 +695,7 @@ export function POS() {
         procesando={procesando}
         clientes={clientes}
         onConfirmar={cobrar}
+        offline={!ventasOffline.online}
       />
 
       {ventaHecha && (
@@ -478,6 +704,20 @@ export function POS() {
           onClose={() => setVentaHecha(null)}
           venta={ventaHecha}
           items={itemsTicket}
+        />
+      )}
+
+      {/* Alta rapida de producto (ver banner de "codigo no encontrado" arriba).
+          No hace falta recargar productos manualmente al guardar: useProductos
+          ya esta suscrito en tiempo real a la tabla y lo agrega solo. */}
+      {esAdmin && (
+        <ProductForm
+          open={crearProductoAbierto}
+          onClose={() => setCrearProductoAbierto(false)}
+          producto={null}
+          categorias={categorias}
+          onGuardado={() => setCodigoDesconocido(null)}
+          skuInicial={codigoDesconocido ?? undefined}
         />
       )}
     </div>

@@ -18,6 +18,9 @@ interface Props {
   producto: Producto | null
   categorias: Categoria[]
   onGuardado: () => void
+  /** Precarga el SKU al crear un producto nuevo (ej. desde un escaneo que no
+   * encontró coincidencia). Se ignora si `producto` no es null (edición). */
+  skuInicial?: string
 }
 
 function mensajeDeError(e: unknown): string {
@@ -44,7 +47,7 @@ const vacio = {
   precio_venta_saco: '',
 }
 
-export function ProductForm({ open, onClose, producto, categorias, onGuardado }: Props) {
+export function ProductForm({ open, onClose, producto, categorias, onGuardado, skuInicial }: Props) {
   const toast = useToast()
   const { subiendo, subir } = useProductoImagen()
   const nombreRef = useRef<HTMLInputElement>(null)
@@ -81,15 +84,19 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado }:
       setTieneSaco(producto.tiene_saco)
       setTipoVenta(producto.tipo_venta ?? 'unidad')
     } else {
-      setF(vacio)
+      setF(skuInicial ? { ...vacio, sku: skuInicial } : vacio)
       setTieneCaja(false)
       setTieneSaco(false)
       setTipoVenta('unidad')
+      // Si llega un SKU precargado (viene de un escaneo sin coincidencia),
+      // el usuario ya no necesita tocar ese campo: pasa el foco directo al
+      // nombre, igual que hace onSkuDetectado tras escanear dentro del form.
+      if (skuInicial) setTimeout(() => nombreRef.current?.focus(), 120)
     }
     setImageFile(null)
     setImagePreview(null)
     setScannerSku(false)
-  }, [producto, open])
+  }, [producto, open, skuInicial])
 
   function set<K extends keyof typeof vacio>(k: K, v: string) {
     setF((prev) => ({ ...prev, [k]: v }))

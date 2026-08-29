@@ -311,35 +311,54 @@ export function useCaja(cajeroId: string | null) {
     }
   }
 
-  // Incrementa los totales de la caja tras una venta — llamado desde POS.
-  // IMPORTANTE: si el RPC `registrar_venta` ya actualiza `cajas` de forma
-  // atómica, eliminar la llamada a `incrementar_caja` aquí y conservar solo
-  // la actualización optimista de estado local (setCaja) para evitar doble
-  // conteo en la base de datos.
-  async function sumarVenta(
+  function campoDe(metodo: 'efectivo' | 'yape' | 'fiado'): keyof CajaRegistro {
+    return metodo === 'efectivo' ? 'total_efectivo' : metodo === 'yape' ? 'total_yape' : 'total_fiado'
+  }
+
+  // Actualizacion optimista local, SIN tocar el servidor. Existe por separado
+  // de sumarVenta (que hace ambas cosas) para el modo offline del POS: al
+  // encolar una venta sin conexion se aplica esto de inmediato (para que el
+  // total de caja en pantalla ya refleje la venta), y cuando esa venta se
+  // sincroniza despues se llama a confirmarVentaRemota (solo RPC) — nunca a
+  // sumarVenta completo, que volveria a sumar el monto una segunda vez en el
+  // estado local (el RPC en el servidor solo se ejecuta una vez, pero el
+  // estado en pantalla quedaria duplicado si se reaplicara el optimista).
+  function aplicarVentaLocal(
+    cajaId: string,
+    metodo: 'efectivo' | 'yape' | 'fiado',
+    monto: number,
+  ): void {
+    const campo = campoDe(metodo)
+    setCaja((prev) =>
+      prev && prev.id === cajaId
+        ? { ...prev, [campo]: toNum(prev[campo]) + toNum(monto) }
+        : prev,
+    )
+  }
+
+  // Solo el RPC remoto, sin actualizacion optimista — para confirmar en el
+  // servidor una venta que ya se conto localmente via aplicarVentaLocal.
+  async function confirmarVentaRemota(
     cajaId: string,
     metodo: 'efectivo' | 'yape' | 'fiado',
     monto: number,
   ): Promise<void> {
-    const campo =
-      metodo === 'efectivo'
-        ? 'total_efectivo'
-        : metodo === 'yape'
-        ? 'total_yape'
-        : 'total_fiado'
-
     await supabase.rpc('incrementar_caja', {
       p_caja_id: cajaId,
       p_metodo: metodo,
       p_monto: toNum(monto),
     } as never)
+  }
 
-    // Actualización optimista con conversión numérica segura
-    setCaja((prev) =>
-      prev && prev.id === cajaId
-        ? { ...prev, [campo]: toNum(prev[campo as keyof CajaRegistro]) + toNum(monto) }
-        : prev,
-    )
+  // Incrementa los totales de la caja tras una venta EN LINEA — llamado
+  // desde POS. Hace ambas cosas: RPC remoto + actualizacion optimista local.
+  async function sumarVenta(
+    cajaId: string,
+    metodo: 'efectivo' | 'yape' | 'fiado',
+    monto: number,
+  ): Promise<void> {
+    await confirmarVentaRemota(cajaId, metodo, monto)
+    aplicarVentaLocal(cajaId, metodo, monto)
   }
 
   // Efectivo en caja = fondo inicial + ventas en efectivo + cobros en
@@ -358,6 +377,8 @@ export function useCaja(cajeroId: string | null) {
     abrir,
     cerrar,
     sumarVenta,
+    aplicarVentaLocal,
+    confirmarVentaRemota,
     total,
     recargar: cargar,
     recargarHistorial: cargarHistorial,

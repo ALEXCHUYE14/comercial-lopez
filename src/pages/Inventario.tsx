@@ -10,6 +10,8 @@ import {
   Trash2,
   Download,
   ScanLine,
+  Tag,
+  Printer,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
 import { useAuth } from '@/context/AuthContext'
@@ -23,6 +25,9 @@ import { ScanEntrada } from '@/components/inventory/ScanEntrada'
 import { money, cx, fechaHora, cantidad, etiquetaUnidad, ymd } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
 import { desbloquearAudioScanner } from '@/utils/beep'
+import { esEan13Valido } from '@/utils/barcode'
+import { construirEtiquetasHtml } from '@/utils/etiqueta'
+import { imprimirTicketHtml } from '@/utils/ticket'
 import type { MovimientoInventario, Producto } from '@/types/database'
 
 export function Inventario() {
@@ -38,6 +43,9 @@ export function Inventario() {
   const [kardex, setKardex] = useState<Producto | null>(null)
   const [eliminarConfirm, setEliminarConfirm] = useState<Producto | null>(null)
   const [eliminando, setEliminando] = useState(false)
+  const [etiquetaProd, setEtiquetaProd] = useState<Producto | null>(null)
+  const [copiasEtiqueta, setCopiasEtiqueta] = useState('1')
+  const [skuNuevo, setSkuNuevo] = useState<string | undefined>(undefined)
 
   const filtrados = useMemo(() => {
     const t = q.trim().toLowerCase()
@@ -86,11 +94,35 @@ export function Inventario() {
 
   function abrirNuevo() {
     setEditando(null)
+    setSkuNuevo(undefined)
     setFormOpen(true)
   }
   function abrirEditar(p: Producto) {
     setEditando(p)
+    setSkuNuevo(undefined)
     setFormOpen(true)
+  }
+  function crearDesdeEscaneo(codigo: string) {
+    setEscaneando(false)
+    setEditando(null)
+    setSkuNuevo(codigo)
+    setFormOpen(true)
+  }
+
+  function abrirEtiqueta(p: Producto) {
+    setEtiquetaProd(p)
+    setCopiasEtiqueta('1')
+  }
+
+  function imprimirEtiqueta() {
+    if (!etiquetaProd) return
+    const n = Math.max(1, Math.min(50, parseInt(copiasEtiqueta) || 1))
+    try {
+      imprimirTicketHtml(construirEtiquetasHtml(etiquetaProd, n))
+      setEtiquetaProd(null)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo abrir la ventana de impresión')
+    }
   }
 
   async function confirmarEliminar() {
@@ -251,6 +283,9 @@ export function Inventario() {
                     <IconBtn title="Kardex" onClick={() => setKardex(p)}>
                       <History className="size-[18px]" />
                     </IconBtn>
+                    <IconBtn title="Imprimir etiqueta" onClick={() => abrirEtiqueta(p)}>
+                      <Tag className="size-[18px]" />
+                    </IconBtn>
                     {esAdmin && (
                       <IconBtn title="Editar" onClick={() => abrirEditar(p)}>
                         <Pencil className="size-[18px]" />
@@ -276,6 +311,12 @@ export function Inventario() {
                       className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-ink-100 py-1.5 text-xs font-semibold text-ink-600"
                     >
                       <History className="size-4" /> Kardex
+                    </button>
+                    <button
+                      onClick={() => abrirEtiqueta(p)}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-ink-100 py-1.5 text-xs font-semibold text-ink-600"
+                    >
+                      <Tag className="size-4" /> Etiqueta
                     </button>
                     {esAdmin && (
                       <button
@@ -339,6 +380,7 @@ export function Inventario() {
         producto={editando}
         categorias={categorias}
         onGuardado={recargar}
+        skuInicial={skuNuevo}
       />
       <StockAdjust
         open={!!ajuste}
@@ -351,8 +393,63 @@ export function Inventario() {
         onClose={() => setEscaneando(false)}
         productos={productos}
         onListo={recargar}
+        onNoEncontrado={crearDesdeEscaneo}
       />
       <KardexSheet producto={kardex} onClose={() => setKardex(null)} />
+
+      {/* Impresion de etiqueta de precio/codigo de barras */}
+      <Sheet
+        open={!!etiquetaProd}
+        onClose={() => setEtiquetaProd(null)}
+        title={etiquetaProd ? `Etiqueta — ${etiquetaProd.nombre}` : 'Etiqueta'}
+        maxWidth="max-w-sm"
+        footer={
+          <Button variant="secondary" className="w-full" onClick={imprimirEtiqueta}>
+            <Printer className="size-4" /> Imprimir
+          </Button>
+        }
+      >
+        {etiquetaProd && (
+          <div className="space-y-4">
+            {esEan13Valido(etiquetaProd.sku) ? (
+              <p className="text-sm text-ink-500">
+                Se imprimirá el nombre, precio y código de barras EAN-13 (
+                <span className="font-mono">{etiquetaProd.sku}</span>) en tiras de 58mm — el
+                mismo formato que ya lee la cámara del sistema.
+              </p>
+            ) : (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700">
+                El SKU <span className="font-mono">{etiquetaProd.sku}</span> no es un código
+                EAN-13 (12-13 dígitos numéricos), así que la etiqueta mostrará el código como
+                texto en vez de un código de barras dibujado.
+              </div>
+            )}
+            <label className="block">
+              <span className="label mb-1.5 block">Copias a imprimir</span>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                className="input tabular text-lg"
+                value={copiasEtiqueta}
+                onChange={(e) => setCopiasEtiqueta(e.target.value)}
+                autoFocus
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {[1, 2, 5, 10, 20].map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setCopiasEtiqueta(String(v))}
+                  className="rounded-lg bg-ink-100 px-3 py-1.5 text-xs font-semibold text-ink-700 hover:bg-ink-200"
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </Sheet>
     </div>
   )
 }
@@ -429,7 +526,10 @@ function KardexSheet({ producto, onClose }: { producto: Producto | null; onClose
                     <Badge tone={e.tone}>{e.txt}</Badge>
                     {m.motivo && <span className="text-xs text-ink-400">{m.motivo}</span>}
                   </div>
-                  <p className="mt-1 text-xs text-ink-400">{fechaHora(m.creado_en)}</p>
+                  <p className="mt-1 text-xs text-ink-400">
+                    {fechaHora(m.creado_en)}
+                    {m.usuario_nombre && ` · ${m.usuario_nombre}`}
+                  </p>
                 </div>
                 <div className="text-right">
                   <p

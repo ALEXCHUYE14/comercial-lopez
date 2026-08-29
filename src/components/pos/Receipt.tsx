@@ -132,7 +132,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           <Check className="size-6 text-accent-700" />
         </div>
         <p className="font-display text-lg font-bold text-ink-900">Venta registrada</p>
-        <p className="text-sm text-ink-400">Comprobante #{venta.numero}</p>
+        <p className="text-sm text-ink-400">
+          {venta.numero > 0 ? `Comprobante #${venta.numero}` : 'Pendiente de sincronizar'}
+        </p>
       </div>
 
       {/* Vista previa */}
@@ -142,7 +144,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           <p className="text-sm font-black tracking-wide">{BRAND.nombre.toUpperCase()}</p>
           <p className="text-ink-400 text-[0.7rem]">{fechaHora(venta.creado_en)}</p>
           <p className="text-ink-400 text-[0.7rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
-          <p className="font-bold text-[0.75rem]">Ticket N° {venta.numero}</p>
+          <p className="font-bold text-[0.75rem]">
+            {venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket (pendiente de sincronizar)'}
+          </p>
         </div>
 
         <hr className="my-2 border-ink-400" />

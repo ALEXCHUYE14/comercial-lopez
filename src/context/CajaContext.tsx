@@ -15,6 +15,12 @@ interface CajaState {
   abrir: (montoInicial: number) => Promise<AperturaResultado>
   cerrar: (montoReal: number) => Promise<ResumenCierre>
   sumarVenta: (cajaId: string, metodo: 'efectivo' | 'yape' | 'fiado', monto: number) => Promise<void>
+  // Para el modo offline del POS (ver hooks/useVentasOffline.ts): aplica el
+  // total solo en pantalla al encolar una venta sin conexion, y lo confirma
+  // en el servidor recien cuando esa venta se sincroniza — nunca ambas cosas
+  // juntas para la misma venta (eso duplicaria el conteo local).
+  aplicarVentaLocal: (cajaId: string, metodo: 'efectivo' | 'yape' | 'fiado', monto: number) => void
+  confirmarVentaRemota: (cajaId: string, metodo: 'efectivo' | 'yape' | 'fiado', monto: number) => Promise<void>
   total: number
   recargar: () => void
   recargarHistorial: () => void
@@ -34,6 +40,8 @@ export function CajaProvider({ children }: { children: ReactNode }) {
     abrir: abrirHook,
     cerrar,
     sumarVenta,
+    aplicarVentaLocal,
+    confirmarVentaRemota,
     total,
     recargar,
     recargarHistorial,
@@ -54,6 +62,8 @@ export function CajaProvider({ children }: { children: ReactNode }) {
     abrir,
     cerrar,
     sumarVenta,
+    aplicarVentaLocal,
+    confirmarVentaRemota,
     total,
     recargar,
     recargarHistorial,

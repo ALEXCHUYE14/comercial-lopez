@@ -21,14 +21,35 @@ import {
   ArrowDownRight,
   TrendingDown,
   CalendarClock,
+  MessageCircle,
 } from 'lucide-react'
 import { useVentasRealtime } from '@/hooks/useVentasRealtime'
 import { useProductos } from '@/hooks/useProductos'
 import { useMermas } from '@/hooks/useMermas'
 import { supabase } from '@/lib/supabase'
+import { BRAND } from '@/config/brand'
 import { Card, Badge } from '@/components/ui/Button'
 import { money, numero, horaCorta, cx, ETIQUETA_PAGO } from '@/utils/format'
-import type { DetalleVenta } from '@/types/database'
+import type { DetalleVenta, Producto } from '@/types/database'
+
+// Arma el mensaje de WhatsApp con el resumen de productos por vencer y abre
+// el selector de contacto de WhatsApp (sin numero fijo: el dueño elige a
+// quien enviarselo — a si mismo, a un encargado, a un proveedor).
+function enviarResumenVencimiento(items: Producto[]) {
+  const lineas = items
+    .map((p) => `• ${p.nombre} — vence ${new Date(p.fecha_vencimiento! + 'T00:00:00').toLocaleDateString('es-PE', { day: '2-digit', month: 'short' })}`)
+    .join('\n')
+  const msg = `*${BRAND.nombre}* — productos próximos a vencer:\n\n${lineas}`
+  window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer')
+}
+
+function enviarResumenStockBajo(items: Producto[]) {
+  const lineas = items
+    .map((p) => `• ${p.nombre} — ${p.stock_actual}/${p.stock_minimo} ${p.unidad}`)
+    .join('\n')
+  const msg = `*${BRAND.nombre}* — productos con stock bajo, a reponer:\n\n${lineas}`
+  window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer')
+}
 
 function inicioMes(): Date {
   const d = new Date()
@@ -410,6 +431,12 @@ export function Dashboard() {
               <CalendarClock className="size-5 text-amber-500" />
               <h3 className="font-display font-bold text-ink-900">Próximos a vencer</h3>
               <Badge tone="warning">{proximosVencer.length}</Badge>
+              <button
+                onClick={() => enviarResumenVencimiento(proximosVencer)}
+                className="ml-auto flex items-center gap-1 rounded-lg bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-700 hover:bg-green-100"
+              >
+                <MessageCircle className="size-3.5" /> Enviar
+              </button>
             </div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {proximosVencer.map((p) => {
@@ -493,6 +520,14 @@ export function Dashboard() {
           <div className="mb-3 flex items-center gap-2">
             <h3 className="font-display font-bold text-ink-900">Reposicion</h3>
             {stockBajo.length > 0 && <Badge tone="warning">{stockBajo.length}</Badge>}
+            {stockBajo.length > 0 && (
+              <button
+                onClick={() => enviarResumenStockBajo(stockBajo)}
+                className="ml-auto flex items-center gap-1 rounded-lg bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-700 hover:bg-green-100"
+              >
+                <MessageCircle className="size-3.5" /> Enviar
+              </button>
+            )}
           </div>
           {stockBajo.length === 0 ? (
             <div className="grid place-items-center py-8 text-center text-ink-300">

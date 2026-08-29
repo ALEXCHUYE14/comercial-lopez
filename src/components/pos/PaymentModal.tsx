@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Banknote, Smartphone, HandCoins, Check, Search } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
@@ -12,6 +12,9 @@ interface Props {
   procesando: boolean
   clientes: ClienteCredito[]
   onConfirmar: (metodo: MetodoPago, pagoRecibido: number, clienteId?: string) => void
+  /** Sin conexión: oculta "Fiado" (requiere validar el límite de crédito
+   * actualizado en el servidor, ver hooks/useVentasOffline.ts). */
+  offline?: boolean
 }
 
 const METODOS: { id: MetodoPago; label: string; icon: typeof Banknote; desc: string }[] = [
@@ -22,11 +25,26 @@ const METODOS: { id: MetodoPago; label: string; icon: typeof Banknote; desc: str
 
 const RAPIDOS = [10, 20, 50, 100, 200]
 
-export function PaymentModal({ open, onClose, total, procesando, clientes, onConfirmar }: Props) {
+export function PaymentModal({ open, onClose, total, procesando, clientes, onConfirmar, offline }: Props) {
   const [metodo, setMetodo] = useState<MetodoPago>('efectivo')
   const [recibido, setRecibido] = useState('')
   const [busqCliente, setBusqCliente] = useState('')
   const [clienteId, setClienteId] = useState<string | null>(null)
+
+  const metodosDisponibles = useMemo(
+    () => (offline ? METODOS.filter((m) => m.id !== 'fiado') : METODOS),
+    [offline],
+  )
+
+  // Si se cae la conexion con "Fiado" ya seleccionado, se vuelve a efectivo
+  // de inmediato — sin esto, el boton de confirmar quedaria mostrando un
+  // metodo que ya no aparece en la lista de arriba.
+  useEffect(() => {
+    if (offline && metodo === 'fiado') {
+      setMetodo('efectivo')
+      setClienteId(null)
+    }
+  }, [offline, metodo])
 
   const esEfectivo = metodo === 'efectivo'
   const esFiado = metodo === 'fiado'
@@ -112,8 +130,13 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
         {/* Selección de método */}
         <div>
           <p className="label mb-2">Método de pago</p>
+          {offline && (
+            <p className="mb-2 text-xs text-amber-600">
+              Sin conexión: "Fiado" no está disponible, se sincronizará cuando vuelva internet.
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-2">
-            {METODOS.map(({ id, label, icon: Icon }) => (
+            {metodosDisponibles.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => { setMetodo(id); setClienteId(null); setRecibido('') }}
