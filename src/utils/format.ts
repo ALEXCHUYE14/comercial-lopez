@@ -6,7 +6,15 @@ export const PEN = new Intl.NumberFormat('es-PE', {
   minimumFractionDigits: 2,
 })
 
-export const money = (n: number | null | undefined): string => PEN.format(Number(n ?? 0))
+// Intl.NumberFormat inserta un espacio "raro" (NBSP u otro separador Unicode,
+// segun el motor/version del navegador) entre "S/" y el monto — se ve normal
+// en pantalla, pero una impresora termica con driver de texto plano no
+// reconoce ese caracter y lo imprime como "?" (ej. "S/?13.50" en vez de
+// "S/ 13.50"). \s en una regex de JS SIEMPRE incluye NBSP y el resto de
+// espacios Unicode, asi que esto los normaliza todos a un espacio comun sin
+// afectar como se ve en pantalla (ahi space y NBSP se renderizan igual).
+export const money = (n: number | null | undefined): string =>
+  PEN.format(Number(n ?? 0)).replace(/\s/g, ' ')
 
 export const numero = new Intl.NumberFormat('es-PE')
 
