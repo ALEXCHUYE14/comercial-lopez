@@ -313,8 +313,16 @@ export function POS() {
             p_cliente_id: clienteId,
             p_monto: carrito.totales.total,
           })
-        } catch {
-          advertencia = 'La venta se registró, pero no se pudo cargar la deuda al cliente. Avisa al administrador.'
+        } catch (e) {
+          // El RPC ahora tambien puede rechazar el cargo por una razon de
+          // negocio real (limite de credito superado — ver schema.sql), no
+          // solo por una falla de red: se muestra el motivo devuelto por el
+          // servidor en vez de un mensaje generico, para que el cajero sepa
+          // que la deuda de este cliente quedo sin actualizar y por que.
+          const motivo = e instanceof Error ? e.message : null
+          advertencia = motivo
+            ? `La venta se registró, pero no se pudo cargar la deuda al cliente: ${motivo}`
+            : 'La venta se registró, pero no se pudo cargar la deuda al cliente. Avisa al administrador.'
         }
       }
 

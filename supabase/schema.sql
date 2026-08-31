@@ -850,6 +850,15 @@ $$;
 -- ----------------------------------------------------------------------------
 -- RPC 5: REGISTRAR CARGO FIADO (suma deuda al cliente)
 -- ----------------------------------------------------------------------------
+-- El limite de credito antes solo se validaba en el navegador (PaymentModal),
+-- nunca aqui en el servidor: dos cajeros vendiendole al fiado al mismo
+-- cliente en dispositivos distintos, casi al mismo tiempo, podian pasar
+-- ambos la validacion en pantalla (cada uno viendo la deuda_actual de ANTES
+-- de la venta del otro) y terminar la deuda del cliente muy por encima de su
+-- limite, sin que el sistema lo bloqueara ni lo avisara. El "for update" de
+-- abajo bloquea la fila del cliente (mismo patron que ya usa
+-- registrar_abono_cliente) para que el segundo cargo en llegar SIEMPRE lea
+-- la deuda ya actualizada por el primero y se valide contra el limite real.
 create or replace function public.registrar_cargo_fiado(
   p_cliente_id uuid,
   p_monto      numeric
@@ -859,10 +868,25 @@ language plpgsql
 security definer set search_path = public
 as $$
 declare
-  v_cliente public.clientes_credito%rowtype;
+  v_cliente    public.clientes_credito%rowtype;
+  v_disponible numeric(10,2);
 begin
+  if p_monto is null or p_monto <= 0 then
+    raise exception 'El monto del cargo debe ser mayor a 0.';
+  end if;
+
   select * into v_cliente from public.clientes_credito where id = p_cliente_id for update;
   if not found then raise exception 'Cliente no encontrado.'; end if;
+
+  if not v_cliente.activo then
+    raise exception 'El cliente "%" esta inactivo y no puede recibir mas fiado.', v_cliente.nombre;
+  end if;
+
+  v_disponible := v_cliente.limite_credito - v_cliente.deuda_actual;
+  if p_monto > v_disponible then
+    raise exception 'Limite de credito superado para "%": disponible %, solicitado %.',
+      v_cliente.nombre, v_disponible, p_monto;
+  end if;
 
   update public.clientes_credito
     set deuda_actual = deuda_actual + p_monto
