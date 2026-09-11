@@ -7,6 +7,12 @@ export const BRAND = {
   /** Nombre de la tienda (aparece en sidebar, login, ticket, PDF) */
   nombre: 'Comercial López JYD EIRL',
 
+  /** RUC del negocio (aparece en el encabezado del ticket de cierre de turno). */
+  ruc: '',
+
+  /** Dirección del local (aparece en el encabezado del ticket de cierre de turno). */
+  direccion: '',
+
   /**
    * Nombre del operador principal (lo que se muestra en el saludo del POS,
    * el avatar del sidebar y el campo "Cajero:" de los tickets).

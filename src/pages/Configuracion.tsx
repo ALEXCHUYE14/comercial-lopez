@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import { Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck } from 'lucide-react'
+import { Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert } from 'lucide-react'
 import { Card, Button, Badge, Spinner } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { useAuth } from '@/context/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { BRAND } from '@/config/brand'
-import { cx } from '@/utils/format'
+import { cx, money } from '@/utils/format'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
+import { useConfiguracionCaja } from '@/hooks/useConfiguracionCaja'
 import type { Perfil, Rol } from '@/types/database'
 
 const ETIQUETA_ROL: Record<Rol, string> = {
@@ -132,6 +133,121 @@ function GestionUsuarios() {
   )
 }
 
+// Politicas de tolerancia del arqueo a ciegas — ver RPC cerrar_caja_arqueo en
+// supabase/schema.sql. El cajero nunca ve estos umbrales (romperia el
+// proposito del arqueo a ciegas); solo el administrador los edita aqui.
+function PoliticasTolerancia() {
+  const { perfil } = useAuth()
+  const toast = useToast()
+  const { config, cargando, guardando, guardar } = useConfiguracionCaja()
+  const [tolerancia, setTolerancia] = useState('')
+  const [critica, setCritica] = useState('')
+  const [editado, setEditado] = useState(false)
+
+  useEffect(() => {
+    if (editado) return
+    setTolerancia(String(config.umbral_tolerancia_faltante))
+    setCritica(String(config.umbral_alerta_critica))
+  }, [config, editado])
+
+  async function guardarCambios() {
+    const t = parseFloat(tolerancia)
+    const c = parseFloat(critica)
+    if (isNaN(t) || t < 0 || isNaN(c) || c < 0) {
+      toast.error('Ingresa montos válidos mayores o iguales a 0.')
+      return
+    }
+    if (c <= t) {
+      toast.error('El umbral de alerta crítica debe ser mayor que el umbral de tolerancia.')
+      return
+    }
+    try {
+      await guardar(t, c, perfil?.id ?? null)
+      setEditado(false)
+      toast.exito('Políticas de tolerancia actualizadas')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo guardar la configuración')
+    }
+  }
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="border-b border-ink-100 px-5 py-4">
+        <h2 className="flex items-center gap-2 font-display font-bold text-ink-900">
+          <ShieldAlert className="size-[18px]" /> Políticas de tolerancia de caja
+        </h2>
+        <p className="mt-0.5 text-sm text-ink-400">
+          Umbrales que evalúa el arqueo a ciegas al cerrar cada turno (ver módulo Caja). Se aplican
+          siempre en el servidor — nunca se muestran al cajero antes de que declare su conteo.
+        </p>
+      </div>
+      {cargando ? (
+        <div className="grid place-items-center py-10">
+          <Spinner className="size-5 text-ink-400" />
+        </div>
+      ) : (
+        <div className="space-y-4 p-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="label mb-1.5 block">Tolerancia de faltante/sobrante (S/)</span>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                className="input tabular"
+                value={tolerancia}
+                onChange={(e) => { setTolerancia(e.target.value); setEditado(true) }}
+              />
+              <p className="mt-1 text-xs text-ink-400">
+                Diferencia dentro de este rango se considera cuadrado ("CONFORME").
+              </p>
+            </label>
+            <label className="block">
+              <span className="label mb-1.5 block">Umbral de alerta crítica (S/)</span>
+              <input
+                type="number"
+                min={0}
+                step={0.01}
+                className="input tabular"
+                value={critica}
+                onChange={(e) => { setCritica(e.target.value); setEditado(true) }}
+              />
+              <p className="mt-1 text-xs text-ink-400">
+                Faltante por encima de este monto genera una alerta crítica de auditoría.
+              </p>
+            </label>
+          </div>
+          <div className="rounded-xl bg-ink-50 p-4 text-xs text-ink-500">
+            <p>
+              Con los valores actuales: un cierre queda <b>CONFORME</b> si la diferencia está entre
+              -{money(parseFloat(tolerancia) || 0)} y +{money(parseFloat(tolerancia) || 0)};{' '}
+              <b>OBSERVADO</b> fuera de ese rango; y <b>ALERTA DE FALTANTE</b> si el faltante supera
+              {' '}{money(parseFloat(critica) || 0)}.
+            </p>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            {config.actualizado_en && (
+              <p className="text-xs text-ink-400">
+                Última actualización: {new Date(config.actualizado_en).toLocaleString('es-PE')}
+              </p>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              disabled={!editado}
+              loading={guardando}
+              onClick={guardarCambios}
+            >
+              Guardar cambios
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
 // Ticket de prueba compartido por "Imprimir por cable" y "Probar Bluetooth":
 // mismos datos, para que ambas vias se puedan comparar en igualdad de
 // condiciones.
@@ -247,6 +363,9 @@ export function Configuracion() {
 
       {/* Sección: Usuarios y roles */}
       <GestionUsuarios />
+
+      {/* Sección: Políticas de tolerancia del arqueo de caja */}
+      <PoliticasTolerancia />
 
       {/* Sección: Impresora */}
       <Card className="overflow-hidden">

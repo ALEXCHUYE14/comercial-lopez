@@ -15,6 +15,7 @@ import { Proveedores } from '@/pages/Proveedores'
 import { Compras } from '@/pages/Compras'
 import { Mermas } from '@/pages/Mermas'
 import { Egresos } from '@/pages/Egresos'
+import { AuditoriaCajeros } from '@/pages/AuditoriaCajeros'
 import { Rentabilidad } from '@/pages/Rentabilidad'
 import { Configuracion } from '@/pages/Configuracion'
 import { tieneAcceso } from '@/utils/roles'
@@ -162,6 +163,17 @@ function Rutas() {
           <Privado>
             <SoloRol minRol="supervisor">
               <Egresos />
+            </SoloRol>
+          </Privado>
+        }
+      />
+
+      <Route
+        path="/auditoria"
+        element={
+          <Privado>
+            <SoloRol minRol="supervisor">
+              <AuditoriaCajeros />
             </SoloRol>
           </Privado>
         }

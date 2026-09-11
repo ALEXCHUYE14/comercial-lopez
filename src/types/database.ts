@@ -6,6 +6,9 @@ export type TipoMovimiento = 'entrada' | 'salida' | 'ajuste' | 'venta' | 'devolu
 export type EstadoCompra = 'pagado' | 'pendiente'
 export type MotivoMerma = 'vencido' | 'danado' | 'consumo_interno' | 'otro'
 export type EstadoCaja = 'abierta' | 'cerrada'
+// Veredicto del arqueo a ciegas al cerrar una caja — ver RPC cerrar_caja_arqueo.
+export type ResultadoArqueo = 'ok' | 'observado' | 'critico'
+export type TipoAlertaArqueo = 'moderado' | 'critico'
 export type CategoriaEgreso =
   | 'proveedor'
   | 'servicios'
@@ -150,6 +153,34 @@ export type CajaRegistro = {
   estado: EstadoCaja
   abierta_en: string
   cerrada_en: string | null
+  // Veredicto del arqueo a ciegas — null mientras la caja sigue abierta,
+  // se completa en el cierre (ver RPC cerrar_caja_arqueo).
+  resultado_arqueo: ResultadoArqueo | null
+  diferencia_arqueo: number | null
+  esperado_efectivo: number | null
+}
+
+export type ConfiguracionCaja = {
+  id: 1
+  umbral_tolerancia_faltante: number
+  umbral_alerta_critica: number
+  actualizado_por: string | null
+  actualizado_en: string
+}
+
+export type AlertaArqueo = {
+  id: string
+  caja_id: string
+  cajero_id: string | null
+  cajero_nombre: string | null
+  tipo: TipoAlertaArqueo
+  diferencia: number
+  umbral_aplicado: number
+  esperado_efectivo: number
+  monto_real: number
+  mensaje: string
+  leida: boolean
+  creado_en: string
 }
 
 export type Proveedor = {
@@ -240,6 +271,8 @@ export interface Database {
       detalle_compras: Tabla<DetalleCompra>
       mermas: Tabla<Merma>
       egresos: Tabla<Egreso>
+      configuracion_caja: Tabla<ConfiguracionCaja>
+      alertas_arqueo: Tabla<AlertaArqueo>
     }
     Views: Record<string, never>
     Functions: {
@@ -301,6 +334,15 @@ export interface Database {
       }
       anular_venta: { Args: { p_venta_id: string }; Returns: Venta }
       es_admin: { Args: Record<string, never>; Returns: boolean }
+      es_supervisor_o_admin: { Args: Record<string, never>; Returns: boolean }
+      cerrar_caja_arqueo: {
+        Args: { p_caja_id: string; p_monto_real: number }
+        Returns: CajaRegistro
+      }
+      marcar_alerta_leida: {
+        Args: { p_alerta_id: string }
+        Returns: AlertaArqueo
+      }
     }
     Enums: {
       rol_usuario: Rol
@@ -310,6 +352,8 @@ export interface Database {
       motivo_merma: MotivoMerma
       estado_caja: EstadoCaja
       categoria_egreso: CategoriaEgreso
+      resultado_arqueo: ResultadoArqueo
+      tipo_alerta_arqueo: TipoAlertaArqueo
     }
     CompositeTypes: Record<string, never>
   }

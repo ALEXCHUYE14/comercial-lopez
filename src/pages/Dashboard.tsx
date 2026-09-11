@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   AreaChart,
   Area,
@@ -16,6 +17,7 @@ import {
   Receipt,
   Wallet,
   AlertTriangle,
+  ShieldAlert,
   Activity,
   ArrowUpRight,
   ArrowDownRight,
@@ -26,10 +28,11 @@ import {
 import { useVentasRealtime } from '@/hooks/useVentasRealtime'
 import { useProductos } from '@/hooks/useProductos'
 import { useMermas } from '@/hooks/useMermas'
+import { useAlertasArqueo } from '@/hooks/useAlertasArqueo'
 import { supabase } from '@/lib/supabase'
 import { BRAND } from '@/config/brand'
 import { Card, Badge } from '@/components/ui/Button'
-import { money, numero, horaCorta, cx, ETIQUETA_PAGO } from '@/utils/format'
+import { money, numero, horaCorta, fechaHora, cx, ETIQUETA_PAGO } from '@/utils/format'
 import type { DetalleVenta, Producto } from '@/types/database'
 
 // Arma el mensaje de WhatsApp con el resumen de productos por vencer y abre
@@ -198,6 +201,7 @@ function TarjetaComparativa({ titulo, datos }: { titulo: string; datos: Comparat
 export function Dashboard() {
   const { ventas, cargando } = useVentasRealtime()
   const { productos } = useProductos()
+  const { criticasNoLeidas } = useAlertasArqueo(20)
   const desdeRef = useRef(inicioMes())
   const hastaRef = useRef(finHoy())
   const { costoTotal: costMermasMes } = useMermas(desdeRef.current, hastaRef.current)
@@ -314,6 +318,31 @@ export function Dashboard() {
           En vivo
         </Badge>
       </div>
+
+      {/* Alerta critica de arqueo — descuadre de caja que supero el umbral
+          critico (ver RPC cerrar_caja_arqueo). Visible de inmediato en el
+          Dashboard del administrador/supervisor, como exige la politica de
+          tolerancia — ver /auditoria para el feed completo. */}
+      {criticasNoLeidas.length > 0 && (
+        <Link
+          to="/auditoria"
+          className="flex items-center gap-3 rounded-2xl border border-red-200 bg-red-50 px-5 py-4 transition hover:border-red-300 hover:bg-red-100"
+        >
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-red-100">
+            <ShieldAlert className="size-5 text-red-600" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-red-800">
+              {criticasNoLeidas.length} alerta{criticasNoLeidas.length === 1 ? '' : 's'} crítica
+              {criticasNoLeidas.length === 1 ? '' : 's'} de faltante de caja
+            </p>
+            <p className="truncate text-xs text-red-500">
+              {criticasNoLeidas[0].mensaje} · {fechaHora(criticasNoLeidas[0].creado_en)}
+            </p>
+          </div>
+          <span className="shrink-0 text-xs font-semibold text-red-600">Ver auditoría →</span>
+        </Link>
+      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -74,7 +74,11 @@ function textoABytes(texto: string): number[] {
   return bytes
 }
 
-class ConstructorTicket {
+// Exportada (ademas de usarse internamente en este archivo) para que otros
+// tickets termicos del sistema — ej. el cierre de turno en ticketCierre.ts —
+// puedan reutilizar exactamente los mismos comandos ESC/POS y helpers de
+// alineacion/columnas, en vez de duplicar esta clase.
+export class ConstructorTicket {
   private partes: number[][] = [[...CMD.init], [...CMD.codepagePC850]]
 
   private raw(bytes: number[]) {

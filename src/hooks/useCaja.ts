@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { inicioDelDia, finDelDia, money } from '@/utils/format'
-import type { CajaRegistro } from '@/types/database'
+import type { CajaRegistro, ResultadoArqueo } from '@/types/database'
 
 export interface ResumenCierre {
   monto_inicial: number
@@ -23,6 +23,13 @@ export interface ResumenCierre {
   esperado_efectivo: number     // fisico: fondo + ventas efectivo + cobros efectivo - egresos efectivo
   ingresado_real: number
   diferencia: number
+  // Veredicto del arqueo a ciegas, calculado en servidor (ver RPC
+  // cerrar_caja_arqueo) contra los umbrales de configuracion_caja.
+  resultado_arqueo: ResultadoArqueo
+  // Fila completa de la caja ya cerrada — la usan los tickets de cierre
+  // (utils/ticketCierre.ts / utils/escposCierre.ts), que necesitan mas
+  // campos (id de turno, cajero, horas) que los que trae este resumen.
+  caja: CajaRegistro
 }
 
 export interface AperturaResultado {
@@ -255,42 +262,40 @@ export function useCaja(cajeroId: string | null) {
   async function cerrar(montoReal: number): Promise<ResumenCierre> {
     if (!caja) throw new Error('No hay caja abierta')
 
+    const montoRealNum = toNum(montoReal)
+
+    // El arqueo (efectivo esperado, diferencia, resultado OK/observado/
+    // critico) se calcula SIEMPRE en el servidor — ver RPC
+    // cerrar_caja_arqueo en supabase/schema.sql. Ni este hook ni la pantalla
+    // de cierre calculan ni conocen el efectivo esperado antes de que el
+    // cajero declare su conteo fisico y lo envie: eso es lo que hace posible
+    // el arqueo a ciegas (antes se computaba aqui mismo, en el cliente, lo
+    // que permitia ver el "esperado" antes de escribir el conteo real).
+    const { data, error } = await supabase.rpc('cerrar_caja_arqueo', {
+      p_caja_id: caja.id,
+      p_monto_real: montoRealNum,
+    })
+    if (error) throw error
+    const cerrada = data as CajaRegistro
+
+    localStorage.removeItem(CAJA_KEY)
+    setCaja(null)
+    setHistorial((prev) => prev.map((x) => (x.id === cerrada.id ? cerrada : x)))
+
     // Conversión explícita antes de operar para evitar concatenación de strings
-    const montoInicial       = toNum(caja.monto_inicial)
-    const totalEfectivo      = toNum(caja.total_efectivo)
-    const totalYape          = toNum(caja.total_yape)
-    const totalFiado         = toNum(caja.total_fiado)
-    const cobrosEfectivo     = toNum(caja.total_cobros_efectivo)
-    const cobrosYape         = toNum(caja.total_cobros_yape)
-    const egresosEfectivo    = toNum(caja.total_egresos_efectivo)
-    const egresosOtros       = toNum(caja.total_egresos_otros)
-    const montoRealNum       = toNum(montoReal)
+    const montoInicial       = toNum(cerrada.monto_inicial)
+    const totalEfectivo      = toNum(cerrada.total_efectivo)
+    const totalYape          = toNum(cerrada.total_yape)
+    const totalFiado         = toNum(cerrada.total_fiado)
+    const cobrosEfectivo     = toNum(cerrada.total_cobros_efectivo)
+    const cobrosYape         = toNum(cerrada.total_cobros_yape)
+    const egresosEfectivo    = toNum(cerrada.total_egresos_efectivo)
+    const egresosOtros       = toNum(cerrada.total_egresos_otros)
 
     const totalVentasDirectas = totalEfectivo + totalYape
     const totalCobros         = cobrosEfectivo + cobrosYape
     const totalEgresos        = egresosEfectivo + egresosOtros
     const balanceNeto         = montoInicial + totalVentasDirectas + totalCobros - totalEgresos
-
-    // Efectivo fisico esperado en caja: solo lo que realmente entro/salio en
-    // billetes/monedas (ventas y cobros en efectivo, menos egresos en efectivo).
-    const esperado   = montoInicial + totalEfectivo + cobrosEfectivo - egresosEfectivo
-    const diferencia = montoRealNum - esperado
-
-    const { data, error } = await supabase
-      .from('cajas')
-      .update({
-        estado: 'cerrada',
-        cerrada_en: new Date().toISOString(),
-        monto_real: montoRealNum,
-      })
-      .eq('id', caja.id)
-      .select()
-      .single()
-    if (error) throw error
-
-    localStorage.removeItem(CAJA_KEY)
-    setCaja(null)
-    setHistorial((prev) => prev.map((x) => (x.id === data.id ? data : x)))
 
     return {
       monto_inicial:          montoInicial,
@@ -305,9 +310,11 @@ export function useCaja(cajeroId: string | null) {
       total_cobros:           totalCobros,
       total_egresos:          totalEgresos,
       balance_neto:           balanceNeto,
-      esperado_efectivo:      esperado,
-      ingresado_real:         montoRealNum,
-      diferencia,
+      esperado_efectivo:      toNum(cerrada.esperado_efectivo),
+      ingresado_real:         toNum(cerrada.monto_real),
+      diferencia:             toNum(cerrada.diferencia_arqueo),
+      resultado_arqueo:       cerrada.resultado_arqueo ?? 'ok',
+      caja:                   cerrada,
     }
   }
 

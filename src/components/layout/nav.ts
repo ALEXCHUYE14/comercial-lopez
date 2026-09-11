@@ -11,6 +11,7 @@ import {
   Settings,
   Percent,
   Wallet,
+  ShieldAlert,
   type LucideIcon,
 } from 'lucide-react'
 import type { Rol } from '@/types/database'
@@ -35,5 +36,6 @@ export const NAV: NavItem[] = [
   { to: '/compras', label: 'Compras', icon: ShoppingBag, minRol: 'supervisor' },
   { to: '/mermas', label: 'Mermas', icon: Trash2, minRol: 'supervisor' },
   { to: '/egresos', label: 'Egresos', icon: Wallet, minRol: 'supervisor' },
+  { to: '/auditoria', label: 'Auditoría', icon: ShieldAlert, minRol: 'supervisor' },
   { to: '/configuracion', label: 'Ajustes', icon: Settings, minRol: 'administrador' },
 ]

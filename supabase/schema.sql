@@ -46,6 +46,18 @@ do $$ begin
   create type estado_caja as enum ('abierta', 'cerrada');
 exception when duplicate_object then null; end $$;
 
+-- Veredicto del arqueo a ciegas al cerrar una caja (ver RPC
+-- cerrar_caja_arqueo): 'ok' = dentro de tolerancia, 'observado' = descuadre
+-- moderado (genera notificacion interna), 'critico' = faltante que supera el
+-- umbral de alerta critica (genera Alerta Critica + flag de auditoria).
+do $$ begin
+  create type resultado_arqueo as enum ('ok', 'observado', 'critico');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type tipo_alerta_arqueo as enum ('moderado', 'critico');
+exception when duplicate_object then null; end $$;
+
 -- ----------------------------------------------------------------------------
 -- 2. PERFILES (extiende auth.users de Supabase)
 -- ----------------------------------------------------------------------------
@@ -120,6 +132,21 @@ drop trigger if exists trg_perfiles_proteger on public.perfiles;
 create trigger trg_perfiles_proteger
   before update on public.perfiles
   for each row execute function public.proteger_columnas_perfil();
+
+-- Helper: es administrador o supervisor? (rol con acceso a reportes y al
+-- panel de auditoria de cajeros/arqueos — evita recursion en politicas RLS,
+-- mismo patron que es_admin()).
+create or replace function public.es_supervisor_o_admin()
+returns boolean
+language sql
+stable
+security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.perfiles
+    where id = auth.uid() and rol in ('administrador', 'supervisor') and activo = true
+  );
+$$;
 
 -- ----------------------------------------------------------------------------
 -- 3. CATEGORIAS
@@ -489,6 +516,58 @@ alter table public.egresos add column if not exists caja_id uuid references publ
 create index if not exists idx_egresos_fecha      on public.egresos (creado_en desc);
 create index if not exists idx_egresos_categoria  on public.egresos (categoria);
 create index if not exists idx_egresos_caja       on public.egresos (caja_id);
+
+-- ----------------------------------------------------------------------------
+-- 15b. CONFIGURACION DE CAJA (politicas de tolerancia del arqueo a ciegas)
+-- ----------------------------------------------------------------------------
+-- Fila unica (singleton, id fijo = 1) con los umbrales que evalua el cierre
+-- de caja (ver RPC cerrar_caja_arqueo). Vive en tabla -no en codigo- para que
+-- el administrador pueda ajustarlos desde Configuracion sin un deploy.
+create table if not exists public.configuracion_caja (
+  id                          smallint primary key default 1 check (id = 1),
+  umbral_tolerancia_faltante numeric(10,2) not null default 5.00  check (umbral_tolerancia_faltante >= 0),
+  umbral_alerta_critica      numeric(10,2) not null default 20.00 check (umbral_alerta_critica >= 0),
+  actualizado_por            uuid references public.perfiles(id) on delete set null,
+  actualizado_en             timestamptz not null default now()
+);
+
+comment on table public.configuracion_caja is
+  'Fila unica de configuracion global: umbrales de tolerancia del arqueo a ciegas de caja.';
+
+-- ----------------------------------------------------------------------------
+-- 15c. ALERTAS DE ARQUEO (descuadres de caja fuera de tolerancia)
+-- ----------------------------------------------------------------------------
+create table if not exists public.alertas_arqueo (
+  id                uuid primary key default gen_random_uuid(),
+  caja_id           uuid not null references public.cajas(id) on delete cascade,
+  cajero_id         uuid references public.perfiles(id) on delete set null,
+  cajero_nombre     text,
+  tipo              tipo_alerta_arqueo not null,
+  diferencia        numeric(10,2) not null,
+  umbral_aplicado   numeric(10,2) not null,
+  esperado_efectivo numeric(10,2) not null,
+  monto_real        numeric(10,2) not null,
+  mensaje           text not null,
+  leida             boolean not null default false,
+  creado_en         timestamptz not null default now()
+);
+
+create index if not exists idx_alertas_arqueo_caja   on public.alertas_arqueo (caja_id);
+create index if not exists idx_alertas_arqueo_cajero on public.alertas_arqueo (cajero_id, creado_en desc);
+create index if not exists idx_alertas_arqueo_leida  on public.alertas_arqueo (leida) where leida = false;
+
+comment on table public.alertas_arqueo is
+  'Alertas generadas automaticamente por cerrar_caja_arqueo cuando el arqueo a ciegas de un cierre de caja supera los umbrales de configuracion_caja.';
+
+-- Columnas de resultado de arqueo en "cajas": persisten el veredicto del
+-- cierre (evaluado en servidor por cerrar_caja_arqueo) para no recalcularlo
+-- en cada lectura del historial/reportes, y para que quede fijo tal como se
+-- evaluo en el momento del cierre aunque luego cambien los umbrales.
+alter table public.cajas add column if not exists resultado_arqueo  resultado_arqueo;
+alter table public.cajas add column if not exists diferencia_arqueo numeric(10,2);
+alter table public.cajas add column if not exists esperado_efectivo numeric(10,2);
+
+create index if not exists idx_cajas_resultado_arqueo on public.cajas (resultado_arqueo);
 
 -- ----------------------------------------------------------------------------
 -- 16. STORAGE - BUCKET DE FOTOS DE PRODUCTOS
@@ -1012,8 +1091,16 @@ declare
   v_egreso      public.egresos%rowtype;
   v_disponible  numeric(10,2);
 begin
-  if not public.es_admin() then
-    raise exception 'Solo un administrador puede registrar egresos.';
+  -- Cualquier usuario autenticado puede registrar un egreso de SU PROPIO
+  -- turno abierto (antes solo el administrador podia registrar egresos en
+  -- absoluto). El administrador conserva la flexibilidad de registrar
+  -- egresos de back-office sin caja (p_caja_id null) para gastos que no
+  -- pertenecen a ningun turno (alquiler, planilla, proveedores, etc.); un
+  -- cajero, en cambio, siempre debe indicar su caja abierta. La verificacion
+  -- de mas abajo (v_caja.cajero_id <> auth.uid()) ya impide que registre
+  -- egresos en una caja ajena.
+  if not public.es_admin() and p_caja_id is null then
+    raise exception 'Debes tener una caja abierta para registrar un egreso.';
   end if;
 
   if p_concepto is null or btrim(p_concepto) = '' then
@@ -1113,6 +1200,138 @@ begin
 end;
 $$;
 
+-- ----------------------------------------------------------------------------
+-- RPC 9: CERRAR CAJA CON ARQUEO A CIEGAS
+-- Transaccional: calcula en SERVIDOR (nunca confiando en un valor enviado
+-- por el cliente) el efectivo esperado, lo compara contra el conteo fisico
+-- declarado por el cajero, evalua el resultado segun los umbrales vigentes en
+-- configuracion_caja, cierra la caja y — si el descuadre supera la
+-- tolerancia — registra una alerta de auditoria (moderada o critica). Este
+-- calculo en servidor es lo que hace posible el arqueo a ciegas: el frontend
+-- nunca conoce el efectivo esperado antes de que el cajero declare su conteo.
+-- ----------------------------------------------------------------------------
+create or replace function public.cerrar_caja_arqueo(
+  p_caja_id    uuid,
+  p_monto_real numeric
+)
+returns public.cajas
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_caja        public.cajas%rowtype;
+  v_config      public.configuracion_caja%rowtype;
+  v_esperado    numeric(10,2);
+  v_diferencia  numeric(10,2);
+  v_resultado   resultado_arqueo;
+  v_tipo_alerta tipo_alerta_arqueo;
+  v_umbral      numeric(10,2);
+  v_mensaje     text;
+begin
+  if p_monto_real is null or p_monto_real < 0 then
+    raise exception 'El monto contado debe ser un numero valido mayor o igual a 0.';
+  end if;
+
+  select * into v_caja from public.cajas where id = p_caja_id for update;
+  if not found then
+    raise exception 'Caja no encontrada.';
+  end if;
+  if v_caja.estado <> 'abierta' then
+    raise exception 'Esta caja ya esta cerrada.';
+  end if;
+  if v_caja.cajero_id <> auth.uid() and not public.es_admin() then
+    raise exception 'No puedes cerrar una caja ajena.';
+  end if;
+
+  -- Umbrales vigentes (fila unica; se autocrea con los valores por defecto si
+  -- nunca se guardo una configuracion — ver semilla al final del script,
+  -- cubierto aqui tambien por si la fila fue borrada manualmente).
+  select * into v_config from public.configuracion_caja where id = 1;
+  if not found then
+    insert into public.configuracion_caja (id) values (1) returning * into v_config;
+  end if;
+
+  -- Efectivo fisico esperado en caja: fondo inicial + ventas efectivo +
+  -- cobros de deuda en efectivo - egresos en efectivo.
+  v_esperado   := round(
+    v_caja.monto_inicial + v_caja.total_efectivo
+    + v_caja.total_cobros_efectivo - v_caja.total_egresos_efectivo,
+    2
+  );
+  v_diferencia := round(p_monto_real - v_esperado, 2);
+
+  if abs(v_diferencia) <= v_config.umbral_tolerancia_faltante then
+    v_resultado := 'ok';
+  elsif v_diferencia < 0 and abs(v_diferencia) > v_config.umbral_alerta_critica then
+    v_resultado := 'critico';
+  else
+    v_resultado := 'observado';
+  end if;
+
+  update public.cajas set
+    estado            = 'cerrada',
+    cerrada_en        = now(),
+    monto_real        = p_monto_real,
+    resultado_arqueo  = v_resultado,
+    diferencia_arqueo = v_diferencia,
+    esperado_efectivo = v_esperado
+  where id = p_caja_id
+  returning * into v_caja;
+
+  -- Alerta de auditoria: se genera tanto para descuadre moderado (fuera de
+  -- tolerancia pero no critico, punto 2 de la politica) como critico (punto
+  -- 3) — solo difiere el "tipo", que el frontend usa para resaltar el
+  -- critico en el feed del administrador.
+  if v_resultado in ('observado', 'critico') then
+    v_tipo_alerta := case when v_resultado = 'critico' then 'critico' else 'moderado' end;
+    v_umbral      := case when v_resultado = 'critico'
+                       then v_config.umbral_alerta_critica
+                       else v_config.umbral_tolerancia_faltante end;
+    v_mensaje := format(
+      '%s de %s en el cierre de caja de %s (esperado %s, contado %s).',
+      case when v_diferencia < 0 then 'Faltante' else 'Sobrante' end,
+      to_char(abs(v_diferencia), 'FM999999990.00'),
+      coalesce(v_caja.cajero_nombre, 'un cajero'),
+      to_char(v_esperado, 'FM999999990.00'),
+      to_char(p_monto_real, 'FM999999990.00')
+    );
+
+    insert into public.alertas_arqueo (
+      caja_id, cajero_id, cajero_nombre, tipo, diferencia,
+      umbral_aplicado, esperado_efectivo, monto_real, mensaje
+    ) values (
+      v_caja.id, v_caja.cajero_id, v_caja.cajero_nombre, v_tipo_alerta, v_diferencia,
+      v_umbral, v_esperado, p_monto_real, v_mensaje
+    );
+  end if;
+
+  return v_caja;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- RPC 10: MARCAR ALERTA DE ARQUEO COMO LEIDA (admin/supervisor)
+-- ----------------------------------------------------------------------------
+create or replace function public.marcar_alerta_leida(p_alerta_id uuid)
+returns public.alertas_arqueo
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_alerta public.alertas_arqueo%rowtype;
+begin
+  if not public.es_supervisor_o_admin() then
+    raise exception 'No tienes permiso para gestionar alertas de arqueo.';
+  end if;
+
+  update public.alertas_arqueo set leida = true where id = p_alerta_id
+    returning * into v_alerta;
+  if not found then raise exception 'Alerta no encontrada.'; end if;
+
+  return v_alerta;
+end;
+$$;
+
 -- ============================================================================
 -- ROW LEVEL SECURITY
 -- ============================================================================
@@ -1130,6 +1349,8 @@ alter table public.compras                 enable row level security;
 alter table public.detalle_compras         enable row level security;
 alter table public.mermas                  enable row level security;
 alter table public.egresos                 enable row level security;
+alter table public.configuracion_caja      enable row level security;
+alter table public.alertas_arqueo          enable row level security;
 
 -- PERFILES
 drop policy if exists perfiles_select on public.perfiles;
@@ -1246,6 +1467,32 @@ create policy egresos_select on public.egresos for select
 drop policy if exists egresos_write on public.egresos;
 create policy egresos_write on public.egresos for all
   to authenticated using (public.es_admin()) with check (public.es_admin());
+-- Nota: el INSERT de un egreso por un cajero (su propio turno) va siempre por
+-- el RPC registrar_egreso, que corre con privilegios de servidor (security
+-- definer) y por lo tanto no depende de esta politica — igual que ya ocurria
+-- con el resto de RPCs de este archivo (ver registrar_venta, movimientos_
+-- inventario). Esta politica solo sigue gateando accesos directos a la tabla
+-- (ej. eliminar vía Supabase Studio), que se mantienen admin-only.
+
+-- CONFIGURACION_CAJA
+drop policy if exists config_caja_select on public.configuracion_caja;
+create policy config_caja_select on public.configuracion_caja for select
+  to authenticated using (true);
+drop policy if exists config_caja_write on public.configuracion_caja;
+create policy config_caja_write on public.configuracion_caja for all
+  to authenticated using (public.es_admin()) with check (public.es_admin());
+
+-- ALERTAS_ARQUEO
+-- Solo administrador/supervisor pueden ver el feed de auditoria de
+-- descuadres. El INSERT ocurre unicamente desde cerrar_caja_arqueo (security
+-- definer) — por eso no existe una politica de insert para "authenticated"
+-- (mismo patron que movimientos_inventario, que tampoco la tiene).
+drop policy if exists alertas_arqueo_select on public.alertas_arqueo;
+create policy alertas_arqueo_select on public.alertas_arqueo for select
+  to authenticated using (public.es_supervisor_o_admin());
+drop policy if exists alertas_arqueo_update on public.alertas_arqueo;
+create policy alertas_arqueo_update on public.alertas_arqueo for update
+  to authenticated using (public.es_supervisor_o_admin());
 
 -- ============================================================================
 -- REALTIME: publicar tablas para sincronizacion instantanea
@@ -1263,6 +1510,11 @@ exception when duplicate_object then null; end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.detalle_ventas;
+exception when duplicate_object then null; end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.alertas_arqueo;
 exception when duplicate_object then null; end $$;
 
 alter table public.productos replica identity full;
@@ -1296,6 +1548,12 @@ from (values
   ('7411001020107','Azucar Rubia 1kg','Abarrotes',3.00,4.20,45,12,'unidad')
 ) as v(sku, nombre, cat, pc, pv, stock, minimo, unidad)
 on conflict (sku) do nothing;
+
+-- Umbrales de tolerancia del arqueo a ciegas por defecto (S/ 5.00 tolerancia,
+-- S/ 20.00 alerta critica) — el administrador puede ajustarlos desde
+-- Configuracion sin volver a correr este script.
+insert into public.configuracion_caja (id) values (1)
+on conflict (id) do nothing;
 
 -- ============================================================================
 --  FIN DEL ESQUEMA

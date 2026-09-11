@@ -8,6 +8,7 @@ import {
   HandCoins,
   CheckCircle2,
   AlertTriangle,
+  ShieldAlert,
   FileDown,
   LogOut,
   Filter,
@@ -15,6 +16,11 @@ import {
   X,
   ArrowDownLeft,
   ArrowUpRight,
+  Printer,
+  Bluetooth,
+  Wallet,
+  ChevronDown,
+  EyeOff,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useCajaCtx } from '@/context/CajaContext'
@@ -25,7 +31,29 @@ import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, horaCorta, ymd, ETIQUETA_PAGO, cx } from '@/utils/format'
 import { mensajeVinculacion, type ResumenCierre } from '@/hooks/useCaja'
-import type { CajaRegistro } from '@/types/database'
+import { ETIQUETA_CATEGORIA_EGRESO, ETIQUETA_METODO_EGRESO } from '@/hooks/useEgresos'
+import { construirTicketCierreHtml, imprimirTicketCierreHtml } from '@/utils/ticketCierre'
+import { construirTicketCierreEscPos } from '@/utils/escposCierre'
+import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
+import type { CajaRegistro, CategoriaEgreso, MetodoEgreso, ResultadoArqueo } from '@/types/database'
+
+const CATEGORIAS_EGRESO: CategoriaEgreso[] = [
+  'proveedor', 'servicios', 'alquiler', 'planilla', 'transporte', 'mantenimiento', 'otro',
+]
+const METODOS_EGRESO: MetodoEgreso[] = ['efectivo', 'yape', 'transferencia', 'otro']
+
+// Etiqueta + tono del veredicto del arqueo — mismo texto que exige el ticket
+// de cierre impreso (ver utils/ticketCierre.ts).
+const ETIQUETA_RESULTADO: Record<ResultadoArqueo, string> = {
+  ok: 'CONFORME',
+  observado: 'OBSERVADO',
+  critico: 'ALERTA DE FALTANTE',
+}
+const TONO_RESULTADO: Record<ResultadoArqueo, 'success' | 'warning' | 'danger'> = {
+  ok: 'success',
+  observado: 'warning',
+  critico: 'danger',
+}
 
 // Constante fuera del componente — evita recreación del array en cada render
 const RAPIDOS_INICIAL = [50, 100, 150, 200, 300, 500]
@@ -326,7 +354,7 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
 
 export function Caja() {
   const { perfil, esAdmin, signOut } = useAuth()
-  const { caja, historial, cargando, abrir, cerrar, recargarHistorial } = useCajaCtx()
+  const { caja, historial, cargando, abrir, cerrar, recargar, recargarHistorial } = useCajaCtx()
   const navigate = useNavigate()
   const toast    = useToast()
 
@@ -340,6 +368,17 @@ export function Caja() {
   const [generandoPDF, setGenerandoPDF] = useState(false)
   const [resumen,      setResumen]      = useState<ResumenCierre | null>(null)
   const [descargandoId, setDescargandoId] = useState<string | null>(null)
+  const [imprimiendoTicketBt, setImprimiendoTicketBt] = useState(false)
+
+  // ── Estado: registrar egreso del turno (cualquier rol, solo su propia caja) ──
+  const [egresoOpen,     setEgresoOpen]     = useState(false)
+  const [guardandoEgreso, setGuardandoEgreso] = useState(false)
+  const [eg, setEg] = useState({
+    concepto: '',
+    categoria: 'otro' as CategoriaEgreso,
+    monto: '',
+    metodo: 'efectivo' as MetodoEgreso,
+  })
 
   // ── Estado: filtros del historial ────────────────────────────────────────────
   const hoy = useMemo(() => ymd(new Date()), [])
@@ -407,6 +446,55 @@ export function Caja() {
     }
   }
 
+  // ── Registrar egreso del turno actual (cualquier rol, solo su propia caja) ──
+  // Version compacta de Egresos.tsx pensada para el cajero: solo lo minimo
+  // para dejar constancia de un gasto directo de caja durante su turno (sin
+  // el historial completo del negocio ni gestion de proveedores, que siguen
+  // siendo exclusivos de /egresos para supervisor/administrador). Llama al
+  // mismo RPC registrar_egreso — el servidor es quien decide si el usuario
+  // puede registrarlo (su propia caja abierta, o cualquiera si es admin) y
+  // valida que el efectivo disponible alcance.
+  async function guardarEgreso() {
+    if (!caja) return
+    if (!eg.concepto.trim()) {
+      toast.error('Escribe el concepto del gasto.')
+      return
+    }
+    const monto = parseFloat(eg.monto) || 0
+    if (monto <= 0) {
+      toast.error('El monto debe ser mayor a 0.')
+      return
+    }
+    setGuardandoEgreso(true)
+    try {
+      const { error } = await supabase.rpc('registrar_egreso', {
+        p_concepto: eg.concepto.trim(),
+        p_categoria: eg.categoria,
+        p_monto: monto,
+        p_metodo: eg.metodo,
+        p_proveedor_id: null,
+        p_notas: null,
+        p_caja_id: caja.id,
+      })
+      if (error) throw error
+      await recargar()
+      toast.exito('Egreso registrado y descontado de tu turno')
+      setEgresoOpen(false)
+      setEg({ concepto: '', categoria: 'otro', monto: '', metodo: 'efectivo' })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo registrar el egreso')
+    } finally {
+      setGuardandoEgreso(false)
+    }
+  }
+
+  // Efectivo disponible en el turno actual — mismo calculo que Egresos.tsx,
+  // para advertir en el formulario antes de que el RPC rechace el egreso.
+  const efectivoDisponibleTurno = caja
+    ? toNum(caja.monto_inicial) + toNum(caja.total_efectivo) +
+      toNum(caja.total_cobros_efectivo) - toNum(caja.total_egresos_efectivo)
+    : 0
+
   // ── Cierre de caja ───────────────────────────────────────────────────────────
   async function confirmarCierre() {
     const monto = parseFloat(montoReal)
@@ -451,6 +539,37 @@ export function Caja() {
       toast.error(e instanceof Error ? e.message : 'No se pudo generar el PDF')
     } finally {
       setDescargandoId(null)
+    }
+  }
+
+  // ── Ticket termico (80mm) de cierre de turno ─────────────────────────────────
+  // Solo se puede generar con la caja YA CERRADA (con resultado_arqueo
+  // calculado por el servidor) — ver comentario de arqueo a ciegas en
+  // utils/ticketCierre.ts. Se ofrece por cable/USB (dialogo de impresion del
+  // navegador) o directo por Bluetooth, igual que el ticket de venta.
+  function imprimirTicketCierreCable(cajaCerrada: CajaRegistro) {
+    try {
+      imprimirTicketCierreHtml(construirTicketCierreHtml(cajaCerrada))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo generar el ticket de cierre')
+    }
+  }
+
+  async function imprimirTicketCierreBt(cajaCerrada: CajaRegistro) {
+    if (!bluetoothDisponible()) {
+      toast.error(
+        'Este navegador no soporta impresión Bluetooth. Usa Chrome/Edge en Android, Windows o Mac.',
+      )
+      return
+    }
+    setImprimiendoTicketBt(true)
+    try {
+      await imprimirPorBluetooth(construirTicketCierreEscPos(cajaCerrada))
+      toast.exito('Ticket de cierre enviado a la impresora Bluetooth')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
+    } finally {
+      setImprimiendoTicketBt(false)
     }
   }
 
@@ -502,13 +621,19 @@ export function Caja() {
             <LockOpen className="size-[18px]" /> Abrir caja
           </Button>
         ) : (
-          <Button
-            variant="outline"
-            className="border-red-200 text-red-700 hover:bg-red-50"
-            onClick={() => { setMontoReal(''); setCerrarOpen(true) }}
-          >
-            <Lock className="size-[18px]" /> Cerrar caja
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setEgresoOpen(true)}>
+              <Wallet className="size-[18px]" />
+              <span className="hidden sm:inline">Registrar egreso</span>
+            </Button>
+            <Button
+              variant="outline"
+              className="border-red-200 text-red-700 hover:bg-red-50"
+              onClick={() => { setMontoReal(''); setCerrarOpen(true) }}
+            >
+              <Lock className="size-[18px]" /> Cerrar caja
+            </Button>
+          </div>
         )}
       </div>
 
@@ -667,7 +792,13 @@ export function Caja() {
                         <div className="mt-0.5">
                           {h.estado === 'abierta' ? (
                             <Badge tone="success">Abierta</Badge>
+                          ) : h.resultado_arqueo ? (
+                            <Badge tone={TONO_RESULTADO[h.resultado_arqueo]}>
+                              {ETIQUETA_RESULTADO[h.resultado_arqueo]}
+                            </Badge>
                           ) : h.monto_real !== null ? (
+                            // Registros cerrados ANTES de la politica de tolerancia (sin
+                            // resultado_arqueo persistido): se conserva el criterio anterior.
                             <Badge tone={hReal >= esperado ? 'success' : 'danger'}>
                               {hReal >= esperado ? 'Cuadrado' : 'Descuadre'}
                             </Badge>
@@ -688,6 +819,19 @@ export function Caja() {
                           ) : (
                             <FileDown className="size-4" />
                           )}
+                        </button>
+                      )}
+                      {/* Reimprimir el ticket termico de cierre — solo disponible para
+                          cierres hechos con la politica de tolerancia (resultado_arqueo
+                          persistido); un cierre historico anterior a esta migracion no
+                          tiene los datos necesarios y no ofrece este boton. */}
+                      {h.estado === 'cerrada' && h.resultado_arqueo && (
+                        <button
+                          title="Reimprimir ticket termico de cierre (80mm)"
+                          onClick={() => imprimirTicketCierreCable(h)}
+                          className="grid size-8 shrink-0 place-items-center rounded-lg text-ink-400 hover:bg-ink-100 hover:text-ink-800"
+                        >
+                          <Printer className="size-4" />
                         </button>
                       )}
                     </div>
@@ -776,28 +920,23 @@ export function Caja() {
       >
         {caja && (
           <div className="space-y-4">
-            <div className="flex items-start gap-2.5 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
-              <FileDown className="mt-0.5 size-4 shrink-0" />
+            {/* Arqueo a ciegas: a proposito NO se muestra aqui ningun total de
+                ventas/cobros/egresos ni el efectivo esperado — el cajero debe
+                declarar lo que cuenta fisicamente sin conocer de antemano la
+                cifra contra la que el sistema lo va a comparar. El desglose
+                completo (y la diferencia) recien se revela DESPUES de
+                confirmar, en el resumen del arqueo. */}
+            <div className="flex items-start gap-2.5 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              <EyeOff className="mt-0.5 size-4 shrink-0" />
               <span>
-                Al confirmar, se generará y descargará automáticamente un{' '}
-                <strong>reporte PDF</strong> con todas las ventas del turno.
+                <strong>Arqueo a ciegas:</strong> cuenta el efectivo físico de la caja y declara el
+                monto exacto. El sistema comparará tu conteo con lo esperado recién después de
+                confirmar.
               </span>
             </div>
             <div className="rounded-xl bg-ink-50 p-4 text-sm space-y-1.5">
-              <InfoRow k="Fondo inicial"       v={money(toNum(caja.monto_inicial))} />
-              <InfoRow k="Ventas efectivo"     v={money(toNum(caja.total_efectivo))} />
-              <InfoRow k="Cobros efectivo"     v={money(toNum(caja.total_cobros_efectivo))} />
-              <InfoRow k="Egresos efectivo"    v={'- ' + money(toNum(caja.total_egresos_efectivo))} />
-              <div className="border-t border-ink-200 pt-1.5">
-                <InfoRow k="Efectivo esperado" v={money(esperadoEfectivoDe(caja))} bold />
-              </div>
-              <InfoRow k="Ventas Yape"      v={money(toNum(caja.total_yape))} />
-              <InfoRow k="Cobros Yape"      v={money(toNum(caja.total_cobros_yape))} />
-              <InfoRow k="Ventas Fiado"     v={money(toNum(caja.total_fiado))} />
-              <InfoRow k="Egresos (otros)"  v={'- ' + money(toNum(caja.total_egresos_otros))} />
-              <div className="border-t border-ink-200 pt-1.5">
-                <InfoRow k="Balance neto del turno" v={money(balanceNetoDe(caja))} bold />
-              </div>
+              <InfoRow k="Cajero"    v={caja.cajero_nombre ?? '-'} />
+              <InfoRow k="Apertura"  v={fechaHora(caja.abierta_en)} />
             </div>
             <label className="block">
               <span className="label mb-1.5 block">¿Cuánto efectivo hay en caja? (S/)</span>
@@ -812,12 +951,13 @@ export function Caja() {
                 autoFocus
               />
             </label>
-            {montoReal !== '' && !isNaN(parseFloat(montoReal)) && (
-              <DifCard
-                esperado={esperadoEfectivoDe(caja)}
-                real={parseFloat(montoReal)}
-              />
-            )}
+            <div className="flex items-start gap-2.5 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
+              <FileDown className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Al confirmar, se generará y descargará automáticamente un{' '}
+                <strong>reporte PDF</strong> con todas las ventas del turno.
+              </span>
+            </div>
           </div>
         )}
       </Sheet>
@@ -848,12 +988,42 @@ export function Caja() {
         {resumen && (
           <div className="space-y-4">
             <div className="flex flex-col items-center text-center pb-2">
-              <div className="mb-2 grid size-12 place-items-center rounded-full bg-accent-100">
-                <CheckCircle2 className="size-6 text-accent-700" />
+              <div
+                className={cx(
+                  'mb-2 grid size-12 place-items-center rounded-full',
+                  resumen.resultado_arqueo === 'ok'
+                    ? 'bg-accent-100'
+                    : resumen.resultado_arqueo === 'observado'
+                    ? 'bg-amber-100'
+                    : 'bg-red-100',
+                )}
+              >
+                {resumen.resultado_arqueo === 'critico' ? (
+                  <ShieldAlert className="size-6 text-red-600" />
+                ) : (
+                  <CheckCircle2
+                    className={cx(
+                      'size-6',
+                      resumen.resultado_arqueo === 'ok' ? 'text-accent-700' : 'text-amber-600',
+                    )}
+                  />
+                )}
               </div>
               <p className="font-display text-base font-bold text-ink-900">Caja cerrada correctamente</p>
               <p className="text-xs text-ink-400 mt-0.5">El reporte PDF fue generado y enviado al navegador</p>
+              <Badge tone={TONO_RESULTADO[resumen.resultado_arqueo]} className="mt-2">
+                {ETIQUETA_RESULTADO[resumen.resultado_arqueo]}
+              </Badge>
             </div>
+            {resumen.resultado_arqueo === 'critico' && (
+              <div className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+                <span>
+                  El faltante supera el umbral de alerta crítica: se generó una alerta de auditoría
+                  visible para el administrador.
+                </span>
+              </div>
+            )}
             <div className="rounded-xl bg-ink-50 p-4 text-sm space-y-1.5">
               <InfoRow k="Fondo inicial"      v={money(resumen.monto_inicial)} />
               <InfoRow k="Ventas efectivo"    v={money(resumen.total_efectivo)} />
@@ -880,10 +1050,129 @@ export function Caja() {
                   : `Hay S/ ${resumen.diferencia.toFixed(2)} de sobra.`}
               </p>
             )}
+            {/* Ticket termico (80mm) de cierre de turno — ver utils/ticketCierre.ts.
+                Solo aparece aqui, DESPUES de confirmado el cierre (nunca antes,
+                por el mismo motivo del arqueo a ciegas). */}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => imprimirTicketCierreCable(resumen.caja)}
+              >
+                <Printer className="size-4" /> Ticket 80mm (cable)
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1"
+                loading={imprimiendoTicketBt}
+                onClick={() => imprimirTicketCierreBt(resumen.caja)}
+              >
+                <Bluetooth className="size-4" /> Ticket 80mm (Bluetooth)
+              </Button>
+            </div>
             <div className="rounded-xl bg-accent-50 px-3.5 py-3 text-xs text-accent-700">
               Los datos han sido archivados en la base de datos para auditoría. El panel está listo
               para el siguiente turno.
             </div>
+          </div>
+        )}
+      </Sheet>
+
+      {/* ══════════════════════════════════════════════════════════════════════════
+          Sheet: registrar egreso del turno actual (cualquier rol)
+      ══════════════════════════════════════════════════════════════════════════ */}
+      <Sheet
+        open={egresoOpen}
+        onClose={() => setEgresoOpen(false)}
+        title="Registrar egreso del turno"
+        maxWidth="max-w-sm"
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm font-semibold text-red-700">
+              {money(parseFloat(eg.monto || '0'))}
+            </span>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setEgresoOpen(false)}>
+                Cancelar
+              </Button>
+              <Button variant="secondary" loading={guardandoEgreso} onClick={guardarEgreso}>
+                Registrar
+              </Button>
+            </div>
+          </div>
+        }
+      >
+        {caja && (
+          <div className="space-y-3">
+            <label className="block">
+              <span className="label mb-1.5 block">Concepto *</span>
+              <input
+                className="input"
+                value={eg.concepto}
+                onChange={(e) => setEg((p) => ({ ...p, concepto: e.target.value }))}
+                placeholder="Ej. Compra de bolsas"
+                autoFocus
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="label mb-1.5 block">Categoria</span>
+                <div className="relative">
+                  <select
+                    className="input appearance-none pr-9"
+                    value={eg.categoria}
+                    onChange={(e) => setEg((p) => ({ ...p, categoria: e.target.value as CategoriaEgreso }))}
+                  >
+                    {CATEGORIAS_EGRESO.map((c) => (
+                      <option key={c} value={c}>{ETIQUETA_CATEGORIA_EGRESO[c]}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-ink-400" />
+                </div>
+              </label>
+              <label className="block">
+                <span className="label mb-1.5 block">Monto (S/)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  className="input tabular"
+                  value={eg.monto}
+                  onChange={(e) => setEg((p) => ({ ...p, monto: e.target.value }))}
+                  placeholder="0.00"
+                />
+              </label>
+            </div>
+            <label className="block">
+              <span className="label mb-1.5 block">Metodo de pago</span>
+              <div className="relative">
+                <select
+                  className="input appearance-none pr-9"
+                  value={eg.metodo}
+                  onChange={(e) => setEg((p) => ({ ...p, metodo: e.target.value as MetodoEgreso }))}
+                >
+                  {METODOS_EGRESO.map((m) => (
+                    <option key={m} value={m}>{ETIQUETA_METODO_EGRESO[m]}</option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-ink-400" />
+              </div>
+            </label>
+            <div className="rounded-xl bg-red-50 px-3.5 py-2.5 text-xs text-red-700">
+              Se descontará de inmediato de tu turno actual
+              {eg.metodo === 'efectivo' && (
+                <> · Efectivo disponible: <strong>{money(efectivoDisponibleTurno)}</strong></>
+              )}
+              {eg.metodo === 'efectivo' && (parseFloat(eg.monto) || 0) > efectivoDisponibleTurno && (
+                <p className="mt-1 font-semibold">
+                  El monto supera el efectivo disponible en caja — no se podrá registrar.
+                </p>
+              )}
+            </div>
+            <p className="text-xs text-ink-400">
+              Para gestionar proveedores, ver el histórico completo del negocio o eliminar un
+              egreso, un administrador puede usar el módulo completo de Egresos.
+            </p>
           </div>
         )}
       </Sheet>
