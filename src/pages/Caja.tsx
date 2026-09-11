@@ -30,6 +30,7 @@ import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, horaCorta, ymd, ETIQUETA_PAGO, cx } from '@/utils/format'
+import { mensajeError } from '@/utils/errors'
 import { mensajeVinculacion, type ResumenCierre } from '@/hooks/useCaja'
 import { ETIQUETA_CATEGORIA_EGRESO, ETIQUETA_METODO_EGRESO } from '@/hooks/useEgresos'
 import { construirTicketCierreHtml, imprimirTicketCierreHtml } from '@/utils/ticketCierre'
@@ -440,7 +441,7 @@ export function Caja() {
       setAbrirOpen(false)
       setMontoInicial('')
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Error al abrir la caja')
+      toast.error(mensajeError(e, 'Error al abrir la caja'))
     } finally {
       setProcesando(false)
     }
@@ -482,7 +483,7 @@ export function Caja() {
       setEgresoOpen(false)
       setEg({ concepto: '', categoria: 'otro', monto: '', metodo: 'efectivo' })
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'No se pudo registrar el egreso')
+      toast.error(mensajeError(e, 'No se pudo registrar el egreso'))
     } finally {
       setGuardandoEgreso(false)
     }
@@ -524,7 +525,7 @@ export function Caja() {
       setResumenOpen(true)
       toast.exito('Caja cerrada correctamente. Reporte PDF generado.')
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Error al cerrar la caja')
+      toast.error(mensajeError(e, 'Error al cerrar la caja'))
     } finally {
       setProcesando(false)
     }
@@ -536,7 +537,7 @@ export function Caja() {
     try {
       await generarReportePDF(h, toNum(h.monto_real))
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'No se pudo generar el PDF')
+      toast.error(mensajeError(e, 'No se pudo generar el PDF'))
     } finally {
       setDescargandoId(null)
     }
@@ -551,7 +552,7 @@ export function Caja() {
     try {
       imprimirTicketCierreHtml(construirTicketCierreHtml(cajaCerrada))
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'No se pudo generar el ticket de cierre')
+      toast.error(mensajeError(e, 'No se pudo generar el ticket de cierre'))
     }
   }
 
@@ -567,7 +568,7 @@ export function Caja() {
       await imprimirPorBluetooth(construirTicketCierreEscPos(cajaCerrada))
       toast.exito('Ticket de cierre enviado a la impresora Bluetooth')
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
+      toast.error(mensajeError(e, 'No se pudo imprimir por Bluetooth'))
     } finally {
       setImprimiendoTicketBt(false)
     }
@@ -591,7 +592,7 @@ export function Caja() {
       setLimpiarHistOpen(false)
       recargarHistorial()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Error al limpiar el historial')
+      toast.error(mensajeError(e, 'Error al limpiar el historial'))
     } finally {
       setLimpiandoHist(false)
     }

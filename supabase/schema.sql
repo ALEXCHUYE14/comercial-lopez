@@ -602,6 +602,14 @@ create policy product_images_delete on storage.objects for delete
 -- ----------------------------------------------------------------------------
 -- RPC 1: REGISTRAR VENTA (transaccional: stock + kardex + caja)
 -- ----------------------------------------------------------------------------
+-- Firma vieja (antes de agregar p_idempotency_key): "create or replace" NO
+-- reemplaza una funcion si cambia su lista de parametros, crea un overload
+-- nuevo y deja el viejo vivo en la base. Con los dos overloads presentes,
+-- cualquier llamada desde el frontend que no mande p_idempotency_key (que es
+-- el caso normal, ya que tiene default) queda ambigua entre ambos y Postgres
+-- responde "Could not choose the best candidate function". Se elimina el
+-- overload viejo antes de crear el nuevo para dejar una sola version.
+drop function if exists public.registrar_venta(jsonb, metodo_pago, numeric, numeric, uuid, uuid, numeric);
 create or replace function public.registrar_venta(
   p_items            jsonb,         -- [{ producto_id, cantidad, precio_unitario, modalidad }]
   p_metodo           metodo_pago,
