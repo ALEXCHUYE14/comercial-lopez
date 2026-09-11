@@ -552,6 +552,14 @@ create table if not exists public.alertas_arqueo (
   creado_en         timestamptz not null default now()
 );
 
+-- Migracion en caliente: en bases donde esta tabla ya existia de una version
+-- anterior del script (creada antes de agregarse esta columna), "create
+-- table if not exists" no la agrega — hay que sumarla aparte. Sin ella,
+-- cerrar_caja_arqueo revienta con "column \"umbral_aplicado\" of relation
+-- \"alertas_arqueo\" does not exist" (42703) apenas un cierre de caja queda
+-- fuera de tolerancia e intenta insertar la alerta.
+alter table public.alertas_arqueo add column if not exists umbral_aplicado numeric(10,2) not null default 0;
+
 create index if not exists idx_alertas_arqueo_caja   on public.alertas_arqueo (caja_id);
 create index if not exists idx_alertas_arqueo_cajero on public.alertas_arqueo (cajero_id, creado_en desc);
 create index if not exists idx_alertas_arqueo_leida  on public.alertas_arqueo (leida) where leida = false;
