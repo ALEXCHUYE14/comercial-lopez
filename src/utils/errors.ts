@@ -14,3 +14,30 @@ export function mensajeError(e: unknown, fallback: string): string {
   }
   return fallback
 }
+
+/**
+ * Igual que mensajeError, pero para errores de `supabase.functions.invoke()`
+ * (Edge Functions). Cuando la funcion responde con un status distinto de 2xx,
+ * supabase-js NO expone el cuerpo JSON de la respuesta en `error.message`
+ * (que queda con un texto generico tipo "Edge Function returned a non-2xx
+ * status code") — el mensaje real que arma la funcion (ej. "Ya existe un
+ * usuario con ese correo electrónico.") viaja en `error.context`, la
+ * Response cruda, y hay que leerla aparte.
+ */
+export async function mensajeErrorFuncion(e: unknown, fallback: string): Promise<string> {
+  if (e && typeof e === 'object' && 'context' in e) {
+    const contexto = (e as { context?: unknown }).context
+    if (contexto instanceof Response) {
+      try {
+        const cuerpo = await contexto.clone().json()
+        if (cuerpo && typeof cuerpo === 'object' && typeof (cuerpo as { error?: unknown }).error === 'string') {
+          return (cuerpo as { error: string }).error
+        }
+      } catch {
+        // El cuerpo no era JSON valido (ej. la funcion ni siquiera respondio,
+        // ni un 500 gateway) — cae al mensaje generico de abajo.
+      }
+    }
+  }
+  return mensajeError(e, fallback)
+}

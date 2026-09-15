@@ -129,6 +129,15 @@ export class ConstructorTicket {
       .raw([...CMD.altoDobleOff, ...CMD.negritaOff])
   }
 
+  /** Como fila(), pero en negrita (sin doble alto) — para la linea de metodo
+   * de pago, que en el ticket HTML tambien va en negrita con el monto
+   * alineado al borde derecho (ver .row-pago en ticket.ts). */
+  filaNegrita(izq: string, der: string) {
+    return this.raw([...CMD.negritaOn])
+      .fila(izq, der)
+      .raw([...CMD.negritaOff])
+  }
+
   separador(caracter: '-' | '=' = '-') {
     return this.linea(caracter.repeat(COLUMNAS))
   }
@@ -191,7 +200,10 @@ export function construirTicketEscPos(venta: TicketDatos, lineas: TicketLinea[])
   t.filaDestacada('TOTAL', money(venta.total))
   t.separador('-')
 
-  t.negrita(`${ETIQUETA_METODO[venta.metodo] ?? venta.metodo}  ${money(venta.pagoRecibido)}`)
+  // fila() en vez de negrita() con texto concatenado: asi el monto queda
+  // alineado al borde derecho, igual que en el ticket HTML (.row-pago usa
+  // justify-between) y que las filas de Vuelto/Fiado a de abajo.
+  t.filaNegrita(ETIQUETA_METODO[venta.metodo] ?? venta.metodo, money(venta.pagoRecibido))
   if (venta.metodo === 'efectivo' && venta.vuelto > 0) {
     t.fila('Vuelto', money(venta.vuelto))
   }

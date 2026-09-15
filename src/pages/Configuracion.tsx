@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
-import { Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert } from 'lucide-react'
+import { useEffect, useState, type FormEvent } from 'react'
+import { Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert, UserPlus, Eye, EyeOff } from 'lucide-react'
 import { Card, Button, Badge, Spinner } from '@/components/ui/Button'
+import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { useAuth } from '@/context/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -8,6 +9,7 @@ import { BRAND } from '@/config/brand'
 import { cx, money } from '@/utils/format'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
+import { mensajeErrorFuncion } from '@/utils/errors'
 import { useConfiguracionCaja } from '@/hooks/useConfiguracionCaja'
 import type { Perfil, Rol } from '@/types/database'
 
@@ -17,12 +19,137 @@ const ETIQUETA_ROL: Record<Rol, string> = {
   cajero: 'Cajero',
 }
 
+// Formulario para que un administrador cree la cuenta de un cajero/supervisor
+// nuevo (correo + contraseña) sin salir del sistema — antes solo se podia
+// crear usuarios manualmente desde el Dashboard de Supabase. La creacion
+// real ocurre en la Edge Function "crear-usuario" (ver
+// supabase/functions/crear-usuario/index.ts): crear un usuario con contraseña
+// arbitraria requiere la service role key, que nunca debe tocar el navegador,
+// asi que ese paso vive en el servidor. El perfil (tabla perfiles) de la
+// cuenta nueva lo crea el trigger on_auth_user_created ya existente — no se
+// duplica esa logica aqui.
+function CrearUsuarioSheet({ open, onClose, onCreado }: {
+  open: boolean
+  onClose: () => void
+  onCreado: () => void
+}) {
+  const toast = useToast()
+  const [nombre, setNombre] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [verPass, setVerPass] = useState(false)
+  const [rol, setRol] = useState<Rol>('cajero')
+  const [creando, setCreando] = useState(false)
+
+  function limpiarYCerrar() {
+    setNombre('')
+    setEmail('')
+    setPassword('')
+    setVerPass(false)
+    setRol('cajero')
+    onClose()
+  }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault()
+    if (password.length < 6) {
+      toast.error('La contraseña debe tener al menos 6 caracteres.')
+      return
+    }
+    setCreando(true)
+    try {
+      const { error } = await supabase.functions.invoke('crear-usuario', {
+        body: { nombre: nombre.trim(), email: email.trim(), password, rol },
+      })
+      if (error) throw error
+      toast.exito(`Cuenta creada para ${nombre.trim()}`)
+      onCreado()
+      limpiarYCerrar()
+    } catch (e) {
+      toast.error(await mensajeErrorFuncion(e, 'No se pudo crear el usuario'))
+    } finally {
+      setCreando(false)
+    }
+  }
+
+  return (
+    <Sheet open={open} onClose={limpiarYCerrar} title="Nuevo usuario" maxWidth="max-w-md">
+      <form id="form-crear-usuario" onSubmit={onSubmit} className="space-y-4">
+        <label className="block">
+          <span className="label mb-1.5 block">Nombre completo</span>
+          <input
+            className="input"
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value)}
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="label mb-1.5 block">Correo electrónico</span>
+          <input
+            type="email"
+            className="input"
+            placeholder="cajero@ejemplo.com"
+            autoComplete="off"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="label mb-1.5 block">Contraseña</span>
+          <div className="relative">
+            <input
+              type={verPass ? 'text' : 'password'}
+              className="input pr-11"
+              placeholder="Mínimo 6 caracteres"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={6}
+              required
+            />
+            <button
+              type="button"
+              onClick={() => setVerPass((v) => !v)}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-ink-400 hover:bg-ink-100 hover:text-ink-600"
+              aria-label={verPass ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+            >
+              {verPass ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-ink-400">
+            Compártela con el cajero por un medio seguro — no vuelve a mostrarse después de crear la cuenta.
+          </p>
+        </label>
+        <label className="block">
+          <span className="label mb-1.5 block">Rol</span>
+          <select className="input" value={rol} onChange={(e) => setRol(e.target.value as Rol)}>
+            <option value="cajero">Cajero</option>
+            <option value="supervisor">Supervisor</option>
+            <option value="administrador">Administrador</option>
+          </select>
+        </label>
+      </form>
+      <div className="mt-2 flex gap-2">
+        <Button type="button" variant="secondary" className="flex-1" onClick={limpiarYCerrar}>
+          Cancelar
+        </Button>
+        <Button type="submit" form="form-crear-usuario" className="flex-1" loading={creando}>
+          Crear usuario
+        </Button>
+      </div>
+    </Sheet>
+  )
+}
+
 function GestionUsuarios() {
   const { perfil: perfilPropio } = useAuth()
   const toast = useToast()
   const [usuarios, setUsuarios] = useState<Perfil[]>([])
   const [cargando, setCargando] = useState(true)
   const [actualizandoId, setActualizandoId] = useState<string | null>(null)
+  const [sheetAbierto, setSheetAbierto] = useState(false)
 
   async function cargar() {
     setCargando(true)
@@ -70,16 +197,26 @@ function GestionUsuarios() {
 
   return (
     <Card className="overflow-hidden">
-      <div className="border-b border-ink-100 px-5 py-4">
-        <h2 className="flex items-center gap-2 font-display font-bold text-ink-900">
-          <Users className="size-[18px]" /> Usuarios y roles
-        </h2>
-        <p className="mt-0.5 text-sm text-ink-400">
-          Administrador: acceso total. Supervisor: puede ver reportes (Rentabilidad, Compras,
-          Mermas, Clientes, Proveedores, Resumen) pero no crear, editar ni eliminar nada. Cajero:
-          solo Punto de venta, Inventario, Ventas y Caja.
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-ink-100 px-5 py-4">
+        <div>
+          <h2 className="flex items-center gap-2 font-display font-bold text-ink-900">
+            <Users className="size-[18px]" /> Usuarios y roles
+          </h2>
+          <p className="mt-0.5 text-sm text-ink-400">
+            Administrador: acceso total. Supervisor: puede ver reportes (Rentabilidad, Compras,
+            Mermas, Clientes, Proveedores, Resumen) pero no crear, editar ni eliminar nada. Cajero:
+            solo Punto de venta, Inventario, Ventas y Caja.
+          </p>
+        </div>
+        <Button size="sm" onClick={() => setSheetAbierto(true)}>
+          <UserPlus className="size-4" /> Nuevo usuario
+        </Button>
       </div>
+      <CrearUsuarioSheet
+        open={sheetAbierto}
+        onClose={() => setSheetAbierto(false)}
+        onCreado={cargar}
+      />
       {cargando ? (
         <div className="grid place-items-center py-10">
           <Spinner className="size-5 text-ink-400" />
