@@ -10,8 +10,9 @@
 // (justo lo que causaba paginas en blanco o mal recortadas al reimprimir
 // desde Ventas). Un documento aislado es lo que garantiza nitidez y
 // consistencia sin importar desde donde se dispare la impresion.
-import { money, fechaHora } from '@/utils/format'
-import { BRAND } from '@/config/brand'
+import { money, fechaHora, escaparHtml } from '@/utils/format'
+import { getNegocio, textoDocumento } from '@/config/negocio'
+import type { QrTermico } from '@/utils/qrTermico'
 
 const ETIQUETA_METODO: Record<string, string> = {
   efectivo: 'Efectivo',
@@ -44,16 +45,37 @@ export interface TicketDatos {
   anulada?: boolean
 }
 
-export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): string {
+/**
+ * `qr` es el QR de Yape ya convertido a blanco y negro (ver qrParaTicket en
+ * utils/qrTermico.ts), o null/undefined si el ticket no lleva QR.
+ */
+export function construirTicketHtml(
+  venta: TicketDatos,
+  lineas: TicketLinea[],
+  qr?: QrTermico | null,
+): string {
+  const negocio = getNegocio()
+  const encabezadoNegocio = [textoDocumento(negocio), negocio.direccion]
+    .filter(Boolean)
+    .map((l) => `<div class="sub-header">${escaparHtml(l)}</div>`)
+    .join('')
+
   const filas = lineas
     .map(
       (l) => `
         <div class="item">
-          <div class="item-nombre">${l.cantidadTexto} ${l.nombre}${l.tag ? ` <span class="tag">[${l.tag}]</span>` : ''}</div>
-          <div class="item-precio">${l.montoTexto}</div>
+          <div class="item-nombre">${escaparHtml(l.cantidadTexto)} ${escaparHtml(l.nombre)}${l.tag ? ` <span class="tag">[${escaparHtml(l.tag)}]</span>` : ''}</div>
+          <div class="item-precio">${escaparHtml(l.montoTexto)}</div>
         </div>`,
     )
     .join('')
+
+  const qrBloque = qr
+    ? `<div class="qr">
+    <div>Escanea con Yape</div>
+    <img src="${qr.dataUrl}" alt="QR de Yape"/>
+  </div>`
+    : ''
 
   const descuentoLine =
     venta.descuento > 0
@@ -66,7 +88,7 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
       : ''
 
   const clienteLine = venta.clienteNombre
-    ? `<div class="row"><span>Fiado a</span><span>${venta.clienteNombre}</span></div>`
+    ? `<div class="row"><span>Fiado a</span><span>${escaparHtml(venta.clienteNombre)}</span></div>`
     : ''
 
   const anuladaBanner = venta.anulada
@@ -222,6 +244,21 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
       line-height: 1.7;
     }
 
+    /* QR de Yape */
+    .qr {
+      text-align: center;
+      margin-top: 4mm;
+      font-size: 10pt;
+      font-weight: 700;
+    }
+    .qr img {
+      display: block;
+      width: 40mm;
+      height: 40mm;
+      margin: 1.5mm auto 0;
+      image-rendering: pixelated;
+    }
+
     /* Pie */
     .footer {
       text-align: center;
@@ -245,9 +282,10 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
 <body>
 
   <div class="header">
-    <div class="nombre-negocio">${BRAND.nombre.toUpperCase()}</div>
+    <div class="nombre-negocio">${escaparHtml(negocio.nombre.toUpperCase())}</div>
+    ${encabezadoNegocio}
     <div class="sub-header">${fechaHora(venta.creadoEn)}</div>
-    <div class="sub-header">Cajero: ${venta.cajeroNombre ?? '-'}</div>
+    <div class="sub-header">Cajero: ${escaparHtml(venta.cajeroNombre ?? '-')}</div>
     <div class="ticket-num">${numeroTicket}</div>
   </div>
 
@@ -275,7 +313,7 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
   <hr class="sep-dash"/>
 
   <div class="row-pago">
-    <span>${ETIQUETA_METODO[venta.metodo] ?? venta.metodo}</span>
+    <span>${escaparHtml(ETIQUETA_METODO[venta.metodo] ?? venta.metodo)}</span>
     <span>${money(venta.pagoRecibido)}</span>
   </div>
   ${vueltoLine}
@@ -287,6 +325,8 @@ export function construirTicketHtml(venta: TicketDatos, lineas: TicketLinea[]): 
     <div>¡Gracias por su compra!</div>
     <div>Vuelva pronto</div>
   </div>
+
+  ${qrBloque}
 
 </body>
 </html>`
@@ -326,7 +366,26 @@ export function imprimirTicketHtml(html: string): void {
   // flujos de impresion a impresoras termicas/Bluetooth).
   setTimeout(cerrar, 60000)
 
-  setTimeout(() => {
-    w.print()
-  }, 350)
+  // Imprime cuando terminaron de cargar las imagenes del ticket (el QR de
+  // Yape): llamar a print() antes las dejaria en blanco. Tope de 3 s para que
+  // una imagen que nunca carga no deje el ticket sin imprimir.
+  const imagenes = Array.from(w.document.images).filter((img) => !img.complete)
+  const esperaImagenes = Promise.race([
+    Promise.all(
+      imagenes.map(
+        (img) =>
+          new Promise<void>((resolve) => {
+            img.addEventListener('load', () => resolve())
+            img.addEventListener('error', () => resolve())
+          }),
+      ),
+    ),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ])
+  esperaImagenes.then(() => {
+    setTimeout(() => {
+      // La ventana pudo cerrarse mientras tanto (el cajero la cerro a mano).
+      if (!w.closed) w.print()
+    }, 350)
+  })
 }

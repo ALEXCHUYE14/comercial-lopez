@@ -1,16 +1,29 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert, UserPlus, Eye, EyeOff } from 'lucide-react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import {
+  Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert,
+  UserPlus, Eye, EyeOff, Store, QrCode, Upload, Trash2, Image as ImageIcon,
+} from 'lucide-react'
 import { Card, Button, Badge, Spinner } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { useAuth } from '@/context/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { BRAND } from '@/config/brand'
+import { useNegocio, documentoValido } from '@/config/negocio'
 import { cx, money } from '@/utils/format'
 import { construirTicketEscPos } from '@/utils/escpos'
-import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
+import { construirTicketHtml, imprimirTicketHtml } from '@/utils/ticket'
+import { qrParaTicket } from '@/utils/qrTermico'
+import {
+  bluetoothDisponible,
+  imprimirPorBluetooth,
+  conectarImpresora,
+  desconectarImpresoraBluetooth,
+  olvidarImpresoraBluetooth,
+  useImpresoraBluetooth,
+} from '@/utils/bluetoothPrinter'
 import { mensajeErrorFuncion } from '@/utils/errors'
 import { useConfiguracionCaja } from '@/hooks/useConfiguracionCaja'
+import { useConfiguracionNegocio } from '@/hooks/useConfiguracionNegocio'
 import type { Perfil, Rol } from '@/types/database'
 
 const ETIQUETA_ROL: Record<Rol, string> = {
@@ -385,20 +398,396 @@ function PoliticasTolerancia() {
   )
 }
 
-// Ticket de prueba compartido por "Imprimir por cable" y "Probar Bluetooth":
-// mismos datos, para que ambas vias se puedan comparar en igualdad de
-// condiciones.
-const VENTA_PRUEBA = {
-  numero: 0,
-  creadoEn: new Date().toISOString(),
-  cajeroNombre: 'Prueba',
-  subtotal: 34.32,
-  descuento: 0,
-  igv: 6.18,
-  total: 40.5,
-  metodo: 'efectivo',
-  pagoRecibido: 40.5,
-  vuelto: 0,
+// Datos del negocio que se imprimen en el encabezado de todos los tickets
+// (venta, cierre de turno) y se muestran en el sistema. Se guardan en la tabla
+// configuracion_negocio (ver supabase/schema.sql); solo el administrador puede
+// editarlos — la ruta /configuracion ya es exclusiva de ese rol y ademas el
+// servidor lo exige con RLS.
+function DatosNegocio() {
+  const { perfil } = useAuth()
+  const toast = useToast()
+  const { negocio, cargando, guardando, guardar } = useConfiguracionNegocio()
+  const [nombre, setNombre] = useState('')
+  const [documento, setDocumento] = useState('')
+  const [direccion, setDireccion] = useState('')
+  const [editado, setEditado] = useState(false)
+
+  // Mientras el usuario no haya tocado nada, el formulario sigue a la
+  // configuracion vigente (llega de forma asincrona); una vez que edita, no se
+  // le pisa lo que escribio.
+  useEffect(() => {
+    if (editado) return
+    setNombre(negocio.nombre)
+    setDocumento(negocio.documento)
+    setDireccion(negocio.direccion)
+  }, [negocio, editado])
+
+  const documentoOk = documentoValido(documento)
+  const etiquetaDoc = documento.length === 8 ? 'DNI' : documento.length === 11 ? 'RUC' : null
+
+  async function guardarCambios() {
+    if (!nombre.trim()) {
+      toast.error('Ingresa el nombre del negocio.')
+      return
+    }
+    if (!documentoOk) {
+      toast.error('El DNI debe tener 8 dígitos o el RUC 11 dígitos (solo números).')
+      return
+    }
+    try {
+      await guardar({ nombre, documento, direccion }, perfil?.id ?? null)
+      setEditado(false)
+      toast.exito('Datos del negocio actualizados')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo guardar')
+    }
+  }
+
+  const docPreview = documento && documentoOk ? `${etiquetaDoc}: ${documento}` : ''
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="border-b border-ink-100 px-5 py-4">
+        <h2 className="flex items-center gap-2 font-display font-bold text-ink-900">
+          <Store className="size-[18px]" /> Datos del negocio
+        </h2>
+        <p className="mt-0.5 text-sm text-ink-400">
+          Aparecen en el encabezado de los tickets y en el sistema.
+        </p>
+      </div>
+      {cargando ? (
+        <div className="grid place-items-center py-10">
+          <Spinner className="size-5 text-ink-400" />
+        </div>
+      ) : (
+        <div className="space-y-4 p-5">
+          <label className="block">
+            <span className="label mb-1.5 block">Nombre del negocio</span>
+            <input
+              className="input"
+              value={nombre}
+              maxLength={80}
+              onChange={(e) => { setNombre(e.target.value); setEditado(true) }}
+            />
+          </label>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="label mb-1.5 block">DNI / RUC del negocio</span>
+              <input
+                className={cx('input tabular', !documentoOk && 'border-red-300 focus:border-red-400')}
+                inputMode="numeric"
+                maxLength={11}
+                placeholder="8 dígitos (DNI) u 11 dígitos (RUC)"
+                value={documento}
+                onChange={(e) => { setDocumento(e.target.value.replace(/\D/g, '')); setEditado(true) }}
+              />
+              <p className={cx('mt-1 text-xs', documentoOk ? 'text-ink-400' : 'text-red-600')}>
+                {documentoOk
+                  ? etiquetaDoc
+                    ? `Se imprimirá como ${etiquetaDoc}.`
+                    : 'Opcional. Déjalo vacío si no quieres imprimirlo.'
+                  : `Faltan dígitos: el DNI tiene 8 y el RUC 11 (llevas ${documento.length}).`}
+              </p>
+            </label>
+            <label className="block">
+              <span className="label mb-1.5 block">Dirección (opcional)</span>
+              <input
+                className="input"
+                maxLength={120}
+                value={direccion}
+                onChange={(e) => { setDireccion(e.target.value); setEditado(true) }}
+              />
+            </label>
+          </div>
+
+          <div className="rounded-xl bg-ink-50 p-4 text-center font-mono text-xs text-ink-600">
+            <p className="text-[0.7rem] uppercase tracking-wider text-ink-400">Así se verá en el ticket</p>
+            <p className="mt-1 text-sm font-black text-ink-900">
+              {(nombre.trim() || negocio.nombre).toUpperCase()}
+            </p>
+            {docPreview && <p>{docPreview}</p>}
+            {direccion.trim() && <p>{direccion.trim()}</p>}
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            {editado && <p className="text-xs text-amber-600">Tienes cambios sin guardar</p>}
+            <Button
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              disabled={!editado || !documentoOk}
+              loading={guardando}
+              onClick={guardarCambios}
+            >
+              Guardar cambios
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  )
+}
+
+// QR de Yape del negocio: se muestra al cobrar con Yape (POS) y, si esta
+// activada la opcion, se imprime en los tickets de ventas pagadas con Yape.
+function QrYape() {
+  const { perfil } = useAuth()
+  const toast = useToast()
+  const { negocio, subiendoQr, subirQr, quitarQr, cambiarImprimirQr } = useConfiguracionNegocio()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [cambiandoOpcion, setCambiandoOpcion] = useState(false)
+  const [previewRoto, setPreviewRoto] = useState(false)
+
+  useEffect(() => {
+    setPreviewRoto(false)
+  }, [negocio.yapeQrUrl])
+
+  async function alElegirArchivo(e: ChangeEvent<HTMLInputElement>) {
+    const archivo = e.target.files?.[0]
+    // Se limpia el input para poder volver a elegir el mismo archivo despues.
+    e.target.value = ''
+    if (!archivo) return
+    try {
+      await subirQr(archivo, perfil?.id ?? null)
+      toast.exito('QR de Yape guardado')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'No se pudo subir el QR')
+    }
+  }
+
+  async function alQuitar() {
+    if (!window.confirm('¿Quitar el QR de Yape? Dejará de mostrarse al cobrar y de imprimirse en los tickets.')) {
+      return
+    }
+    try {
+      await quitarQr(perfil?.id ?? null)
+      toast.exito('QR de Yape eliminado')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'No se pudo quitar el QR')
+    }
+  }
+
+  async function alCambiarOpcion(valor: boolean) {
+    setCambiandoOpcion(true)
+    try {
+      await cambiarImprimirQr(valor, perfil?.id ?? null)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'No se pudo guardar la opción')
+    } finally {
+      setCambiandoOpcion(false)
+    }
+  }
+
+  const tieneQr = !!negocio.yapeQrUrl
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="border-b border-ink-100 px-5 py-4">
+        <h2 className="flex items-center gap-2 font-display font-bold text-ink-900">
+          <QrCode className="size-[18px]" /> QR de Yape
+        </h2>
+        <p className="mt-0.5 text-sm text-ink-400">
+          Sube la imagen de tu código QR de Yape: se mostrará al cobrar con Yape y podrá imprimirse en el ticket.
+        </p>
+      </div>
+      <div className="space-y-4 p-5">
+        <div className="flex flex-wrap items-start gap-5">
+          <div className="grid size-40 shrink-0 place-items-center overflow-hidden rounded-2xl border border-dashed border-ink-200 bg-white">
+            {tieneQr && !previewRoto ? (
+              <img
+                src={negocio.yapeQrUrl ?? undefined}
+                alt="QR de Yape"
+                className="size-full object-contain p-2"
+                onError={() => setPreviewRoto(true)}
+              />
+            ) : (
+              <div className="px-3 text-center text-xs text-ink-400">
+                <ImageIcon className="mx-auto mb-1 size-6 text-ink-300" />
+                {tieneQr ? 'No se pudo cargar la imagen' : 'Aún no hay un QR cargado'}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 flex-1 space-y-3">
+            <input
+              ref={inputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={alElegirArchivo}
+            />
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={subiendoQr}
+                onClick={() => inputRef.current?.click()}
+              >
+                <Upload className="size-4" /> {tieneQr ? 'Cambiar imagen' : 'Subir imagen del QR'}
+              </Button>
+              {tieneQr && (
+                <Button variant="outline" size="sm" disabled={subiendoQr} onClick={alQuitar}>
+                  <Trash2 className="size-4" /> Quitar
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-ink-400">
+              Usa una imagen que muestre solo el código QR (recórtala si es una captura de pantalla), PNG o JPG
+              de hasta 8 MB. Para que se imprima nítido en la térmica, el QR debe verse con buen contraste.
+            </p>
+            <label
+              className={cx(
+                'flex items-start gap-2.5 text-sm text-ink-700',
+                !tieneQr && 'opacity-50',
+              )}
+            >
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 rounded border-ink-300"
+                checked={negocio.imprimirQrYape}
+                disabled={!tieneQr || cambiandoOpcion}
+                onChange={(e) => alCambiarOpcion(e.target.checked)}
+              />
+              <span>Imprimir el QR en los tickets de ventas pagadas con Yape</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+// Estado y control de la impresora Bluetooth (ver utils/bluetoothPrinter.ts).
+// El navegador exige elegir la impresora en su selector nativo la primera vez;
+// desde ahi queda recordada y se reconecta sola al imprimir o al abrir el
+// sistema.
+function ImpresoraBluetooth({ onProbar, probando }: { onProbar: () => void; probando: boolean }) {
+  const toast = useToast()
+  const impresora = useImpresoraBluetooth()
+  const [accion, setAccion] = useState<'conectar' | 'cambiar' | null>(null)
+  const soportado = bluetoothDisponible()
+
+  async function conectar(elegirNueva: boolean) {
+    setAccion(elegirNueva ? 'cambiar' : 'conectar')
+    try {
+      await conectarImpresora(elegirNueva)
+      toast.exito('Impresora Bluetooth conectada')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo conectar la impresora')
+    } finally {
+      setAccion(null)
+    }
+  }
+
+  async function olvidar() {
+    if (!window.confirm('¿Olvidar esta impresora? Tendrás que elegirla de nuevo para imprimir por Bluetooth.')) return
+    await olvidarImpresoraBluetooth()
+    toast.exito('Impresora olvidada')
+  }
+
+  if (!soportado) {
+    return (
+      <div className="flex items-start gap-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+        <span>
+          Este navegador no soporta impresión Bluetooth directa. Usa Chrome o Edge en Android, Windows o
+          Mac (Safari/iPhone no la soportan) o imprime por cable.
+        </span>
+      </div>
+    )
+  }
+
+  const estadoTexto = impresora.conectada
+    ? `Conectada${impresora.nombre ? ` · ${impresora.nombre}` : ''}`
+    : impresora.conectando
+      ? 'Conectando…'
+      : impresora.nombre
+        ? `Desconectada · ${impresora.nombre}`
+        : 'Sin impresora conectada'
+
+  return (
+    <div className="space-y-3 rounded-xl border border-ink-100 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-sm font-semibold text-ink-800">
+          <Bluetooth className="size-4" /> Impresora Bluetooth
+        </p>
+        <span
+          className={cx(
+            'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold',
+            impresora.conectada
+              ? 'bg-accent-50 text-accent-700'
+              : impresora.conectando
+                ? 'bg-amber-50 text-amber-700'
+                : 'bg-ink-100 text-ink-500',
+          )}
+        >
+          <span
+            className={cx(
+              'size-1.5 rounded-full',
+              impresora.conectada ? 'bg-accent-500' : impresora.conectando ? 'bg-amber-500' : 'bg-ink-300',
+            )}
+          />
+          {estadoTexto}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {!impresora.conectada && (
+          <Button
+            size="sm"
+            loading={accion === 'conectar' || impresora.conectando}
+            onClick={() => conectar(!impresora.nombre)}
+          >
+            <Bluetooth className="size-4" /> {impresora.nombre ? 'Reconectar' : 'Conectar impresora'}
+          </Button>
+        )}
+        {impresora.conectada && (
+          <Button variant="outline" size="sm" onClick={desconectarImpresoraBluetooth}>
+            Desconectar
+          </Button>
+        )}
+        {(impresora.nombre || impresora.conectada) && (
+          <Button
+            variant="outline"
+            size="sm"
+            loading={accion === 'cambiar'}
+            onClick={() => conectar(true)}
+          >
+            Cambiar impresora
+          </Button>
+        )}
+        <Button variant="secondary" size="sm" loading={probando} onClick={onProbar}>
+          <Printer className="size-4" /> Imprimir ticket de prueba
+        </Button>
+        {impresora.nombre && (
+          <Button variant="outline" size="sm" onClick={olvidar}>
+            Olvidar
+          </Button>
+        )}
+      </div>
+      <p className="text-xs text-ink-400">
+        Conéctala una vez: el sistema la recuerda en este equipo y se reconecta sola al imprimir. Si la
+        impresora se apaga, al encenderla vuelve a conectarse en el siguiente ticket.
+      </p>
+    </div>
+  )
+}
+
+// Ticket de prueba compartido por "Imprimir por cable" y "Imprimir ticket de
+// prueba" (Bluetooth): mismos datos y misma plantilla que un ticket real, para
+// que ambas vias se puedan comparar en igualdad de condiciones. Si hay un QR
+// de Yape cargado, la prueba se hace como pago Yape para verlo impreso.
+function ventaPrueba(conQr: boolean) {
+  return {
+    numero: 0,
+    creadoEn: new Date().toISOString(),
+    cajeroNombre: 'Prueba',
+    subtotal: 34.32,
+    descuento: 0,
+    igv: 6.18,
+    total: 40.5,
+    metodo: conQr ? 'yape' : 'efectivo',
+    pagoRecibido: 40.5,
+    vuelto: 0,
+  }
 }
 const LINEAS_PRUEBA = [
   { cantidadTexto: '1x', nombre: 'Producto A', montoTexto: 'S/ 10.00' },
@@ -408,8 +797,10 @@ const LINEAS_PRUEBA = [
 
 export function Configuracion() {
   const toast = useToast()
+  const negocio = useNegocio()
   const [estadoImpresion, setEstadoImpresion] = useState<'idle' | 'ok' | 'error'>('idle')
   const [probandoBt, setProbandoBt] = useState(false)
+  const [probandoCable, setProbandoCable] = useState(false)
 
   async function probarImpresionBluetooth() {
     if (!bluetoothDisponible()) {
@@ -420,7 +811,10 @@ export function Configuracion() {
     }
     setProbandoBt(true)
     try {
-      await imprimirPorBluetooth(construirTicketEscPos(VENTA_PRUEBA, LINEAS_PRUEBA))
+      const datos = ventaPrueba(!!negocio.yapeQrUrl)
+      const { qr, fallo } = await qrParaTicket(datos.metodo)
+      if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket de prueba se imprime sin QR.')
+      await imprimirPorBluetooth(construirTicketEscPos(datos, LINEAS_PRUEBA, qr))
       toast.exito('Ticket de prueba enviado a la impresora Bluetooth')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
@@ -429,66 +823,19 @@ export function Configuracion() {
     }
   }
 
-  function probarImpresion() {
-    const w = window.open('', '_blank', 'width=380,height=520,menubar=no,toolbar=no')
-    if (!w) {
-      setEstadoImpresion('error')
-      return
-    }
-
-    const ahora = new Date().toLocaleString('es-PE', {
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit', second: '2-digit',
-    })
-
-    w.document.write(`<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8"/>
-  <title>Prueba de Impresión</title>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Courier New',Courier,monospace; font-size:12px; width:80mm; padding:4mm; }
-    .center { text-align:center; }
-    .bold { font-weight:bold; }
-    .line { border-top:1px dashed #000; margin:4px 0; }
-    .row { display:flex; justify-content:space-between; }
-    @media print { body { width:80mm; } }
-  </style>
-</head>
-<body>
-  <div class="center bold" style="font-size:14px;margin-bottom:4px;">${BRAND.nombre.toUpperCase()}</div>
-  <div class="center" style="font-size:10px;margin-bottom:8px;">Sistema de Gestión Comercial</div>
-  <div class="line"></div>
-  <div class="center bold" style="margin:6px 0;">*** TICKET DE PRUEBA ***</div>
-  <div class="line"></div>
-  <div style="margin:6px 0;">
-    <div class="row"><span>Fecha/Hora:</span><span>${ahora}</span></div>
-    <div class="row"><span>Sistema:</span><span>${BRAND.nombre}</span></div>
-    <div class="row"><span>Estado:</span><span>Operativo</span></div>
-  </div>
-  <div class="line"></div>
-  <div style="margin:6px 0;">
-    <div class="row"><span>Producto A</span><span>S/ 10.00</span></div>
-    <div class="row"><span>Producto B</span><span>S/ 25.50</span></div>
-    <div class="row"><span>Producto C</span><span>S/ 5.00</span></div>
-  </div>
-  <div class="line"></div>
-  <div class="row bold" style="margin:4px 0;font-size:13px;">
-    <span>TOTAL</span><span>S/ 40.50</span>
-  </div>
-  <div class="line"></div>
-  <div class="center" style="margin-top:8px;font-size:10px;">Si ves este ticket, la impresora</div>
-  <div class="center" style="font-size:10px;">esta configurada correctamente.</div>
-  <div class="center bold" style="margin-top:6px;">¡Gracias por su compra!</div>
-</body>
-</html>`)
-    w.document.close()
-    w.focus()
-    setTimeout(() => {
-      w.print()
+  async function probarImpresion() {
+    setProbandoCable(true)
+    try {
+      const datos = ventaPrueba(!!negocio.yapeQrUrl)
+      const { qr, fallo } = await qrParaTicket(datos.metodo)
+      if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket de prueba se imprime sin QR.')
+      imprimirTicketHtml(construirTicketHtml(datos, LINEAS_PRUEBA, qr))
       setEstadoImpresion('ok')
-    }, 400)
+    } catch {
+      setEstadoImpresion('error')
+    } finally {
+      setProbandoCable(false)
+    }
   }
 
   return (
@@ -498,21 +845,23 @@ export function Configuracion() {
         <p className="text-sm text-ink-400">Ajustes del sistema y herramientas de diagnóstico</p>
       </div>
 
-      {/* Sección: Usuarios y roles */}
-      <GestionUsuarios />
+      {/* Sección: Datos del negocio (nombre, DNI/RUC, dirección) */}
+      <DatosNegocio />
 
-      {/* Sección: Políticas de tolerancia del arqueo de caja */}
-      <PoliticasTolerancia />
+      {/* Sección: QR de Yape */}
+      <QrYape />
 
       {/* Sección: Impresora */}
       <Card className="overflow-hidden">
         <div className="border-b border-ink-100 px-5 py-4">
           <h2 className="font-display font-bold text-ink-900">Impresora de tickets</h2>
           <p className="mt-0.5 text-sm text-ink-400">
-            Prueba la conexión con tu impresora térmica o Bluetooth
+            Conecta tu impresora térmica por Bluetooth para imprimir los tickets directamente
           </p>
         </div>
         <div className="space-y-4 p-5">
+          <ImpresoraBluetooth onProbar={probarImpresionBluetooth} probando={probandoBt} />
+
           <div className="flex items-start gap-3 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
             <Info className="mt-0.5 size-4 shrink-0" />
             <span>
@@ -523,11 +872,8 @@ export function Configuracion() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <Button variant="secondary" onClick={probarImpresion}>
+            <Button variant="secondary" onClick={probarImpresion} loading={probandoCable}>
               <Printer className="size-4" /> Imprimir por cable
-            </Button>
-            <Button variant="secondary" onClick={probarImpresionBluetooth} loading={probandoBt}>
-              <Bluetooth className="size-4" /> Probar Bluetooth
             </Button>
             {estadoImpresion === 'ok' && (
               <span className="flex items-center gap-1.5 text-sm font-medium text-accent-700">
@@ -545,8 +891,8 @@ export function Configuracion() {
             <p className="mb-2 font-semibold text-ink-800">Bluetooth directo (recomendado en tablet/celular):</p>
             <ol className="list-decimal list-inside space-y-1 text-ink-500">
               <li>Enciende la impresora térmica y activa su modo Bluetooth</li>
-              <li>Toca <strong>"Probar Bluetooth"</strong> (o el botón Bluetooth al imprimir un ticket)</li>
-              <li>Elige la impresora en la lista que muestra el navegador — no hace falta instalar ningún driver</li>
+              <li>Toca <strong>"Conectar impresora"</strong> y elige la impresora en la lista que muestra el navegador — no hace falta instalar ningún driver</li>
+              <li>Desde ese momento los botones <strong>Bluetooth</strong> de cada ticket imprimen directo, sin volver a elegirla</li>
               <li>Disponible solo en <strong>Chrome o Edge</strong> (Android, Windows o Mac); Safari/iPhone no lo soportan</li>
             </ol>
           </div>
@@ -563,6 +909,12 @@ export function Configuracion() {
         </div>
       </Card>
 
+      {/* Sección: Usuarios y roles */}
+      <GestionUsuarios />
+
+      {/* Sección: Políticas de tolerancia del arqueo de caja */}
+      <PoliticasTolerancia />
+
       {/* Sección: Información del sistema */}
       <Card className="overflow-hidden">
         <div className="border-b border-ink-100 px-5 py-4">
@@ -570,14 +922,14 @@ export function Configuracion() {
         </div>
         <div className="divide-y divide-ink-50">
           {[
-            { k: 'Aplicación', v: `${BRAND.nombre} POS` },
+            { k: 'Aplicación', v: `${negocio.nombre} POS` },
             { k: 'Versión', v: import.meta.env.VITE_APP_VERSION ?? '1.0.0' },
             { k: 'Entorno', v: import.meta.env.MODE === 'production' ? 'Producción' : 'Desarrollo' },
             { k: 'Navegador', v: navigator.userAgent.split(' ').slice(-2).join(' ') },
           ].map(({ k, v }) => (
-            <div key={k} className="flex justify-between px-5 py-3 text-sm">
+            <div key={k} className="flex justify-between gap-4 px-5 py-3 text-sm">
               <span className="text-ink-500">{k}</span>
-              <span className="font-medium text-ink-800">{v}</span>
+              <span className="text-right font-medium text-ink-800">{v}</span>
             </div>
           ))}
         </div>

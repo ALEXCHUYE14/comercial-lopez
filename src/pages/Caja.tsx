@@ -26,10 +26,11 @@ import { supabase } from '@/lib/supabase'
 import { useCajaCtx } from '@/context/CajaContext'
 import { useAuth } from '@/context/AuthContext'
 import { BRAND } from '@/config/brand'
+import { getNegocio, textoDocumento } from '@/config/negocio'
 import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
-import { money, fechaHora, horaCorta, ymd, ETIQUETA_PAGO, cx } from '@/utils/format'
+import { money, fechaHora, horaCorta, ymd, ETIQUETA_PAGO, cx, escaparHtml } from '@/utils/format'
 import { mensajeError } from '@/utils/errors'
 import { mensajeVinculacion, type ResumenCierre } from '@/hooks/useCaja'
 import { ETIQUETA_CATEGORIA_EGRESO, ETIQUETA_METODO_EGRESO } from '@/hooks/useEgresos'
@@ -197,11 +198,12 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
             .join('')
         : `<tr><td colspan="4" style="text-align:center;padding:16px;color:#aaa;">Sin egresos registrados en este turno</td></tr>`
 
+    const negocio = getNegocio()
     const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
-  <title>Cierre de Caja — ${BRAND.nombre}</title>
+  <title>Cierre de Caja — ${escaparHtml(negocio.nombre)}</title>
   <style>
     *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
     body { font-family:'Helvetica Neue',Arial,sans-serif; font-size:10pt; color:#1a1a1a; background:#fff; padding:18mm 16mm 20mm; }
@@ -267,15 +269,15 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
 <body>
   <div class="header">
     <div class="header-left">
-      <img src="${logoUrl}" class="logo" alt="${BRAND.nombre}" onerror="this.style.display='none'"/>
+      <img src="${logoUrl}" class="logo" alt="${escaparHtml(negocio.nombre)}" onerror="this.style.display='none'"/>
       <div>
-        <div class="store-name">${BRAND.nombre.toUpperCase()}</div>
-        <div class="store-sub">Sistema de Gestion Comercial · Reporte Interno</div>
+        <div class="store-name">${escaparHtml(negocio.nombre.toUpperCase())}</div>
+        <div class="store-sub">${escaparHtml([textoDocumento(negocio), negocio.direccion].filter(Boolean).join(' · ') || 'Sistema de Gestion Comercial')} · Reporte Interno</div>
       </div>
     </div>
     <div class="report-info">
       <div class="report-title">Reporte de Cierre de Caja</div>
-      <div class="report-meta">Cajero: <b>${cajaData.cajero_nombre ?? '—'}</b><br/>Generado: ${fechaHora(ahora)}</div>
+      <div class="report-meta">Cajero: <b>${escaparHtml(cajaData.cajero_nombre ?? '—')}</b><br/>Generado: ${fechaHora(ahora)}</div>
     </div>
   </div>
   <div class="section">
@@ -332,7 +334,7 @@ async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: numbe
       <div class="neto-value">${money(balanceNeto)}</div>
     </div>
   </div>
-  <div class="footer">${BRAND.nombre} &nbsp;·&nbsp; Reporte generado el ${fechaHora(ahora)} &nbsp;·&nbsp; Documento de uso interno</div>
+  <div class="footer">${escaparHtml(negocio.nombre)} &nbsp;·&nbsp; Reporte generado el ${fechaHora(ahora)} &nbsp;·&nbsp; Documento de uso interno</div>
 </body>
 </html>`
 

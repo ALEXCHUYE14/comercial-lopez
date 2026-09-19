@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/context/AuthContext'
 import { CajaProvider } from '@/context/CajaContext'
@@ -18,6 +19,10 @@ import { Egresos } from '@/pages/Egresos'
 import { AuditoriaCajeros } from '@/pages/AuditoriaCajeros'
 import { Rentabilidad } from '@/pages/Rentabilidad'
 import { Configuracion } from '@/pages/Configuracion'
+import { sincronizarNegocio } from '@/hooks/useConfiguracionNegocio'
+import { useNegocio } from '@/config/negocio'
+import { precargarQr } from '@/utils/qrTermico'
+import { reconectarImpresoraGuardada } from '@/utils/bluetoothPrinter'
 import { tieneAcceso } from '@/utils/roles'
 import type { Rol } from '@/types/database'
 import type { ReactNode } from 'react'
@@ -28,6 +33,42 @@ function Cargando() {
       <Spinner className="size-7 text-ink-400" />
     </div>
   )
+}
+
+/**
+ * Mantiene sincronizados los datos del negocio (nombre, DNI/RUC, QR de Yape)
+ * con Supabase mientras haya sesion: al iniciar sesion y cada vez que la app
+ * vuelve a primer plano (asi un cajero con el POS abierto todo el dia ve los
+ * cambios que hizo el administrador sin recargar).
+ */
+function SincronizarNegocio() {
+  const { session } = useAuth()
+  const { yapeQrUrl } = useNegocio()
+  const haySesion = !!session
+
+  useEffect(() => {
+    if (!haySesion) return
+    sincronizarNegocio()
+    const alVolver = () => {
+      if (document.visibilityState === 'visible') sincronizarNegocio()
+    }
+    document.addEventListener('visibilitychange', alVolver)
+    return () => document.removeEventListener('visibilitychange', alVolver)
+  }, [haySesion])
+
+  // Deja lista la impresora Bluetooth usada la ultima vez (sin selector; si
+  // esta apagada simplemente queda desconectada y se reconecta al imprimir).
+  useEffect(() => {
+    if (haySesion) reconectarImpresoraGuardada()
+  }, [haySesion])
+
+  // Descarga el QR de Yape ya convertido a blanco y negro para que se pueda
+  // imprimir en el ticket aunque despues se pierda la conexion a internet.
+  useEffect(() => {
+    if (haySesion) precargarQr(yapeQrUrl)
+  }, [haySesion, yapeQrUrl])
+
+  return null
 }
 
 /** Exige sesion activa. Sin sesion -> Login. */
@@ -201,6 +242,7 @@ export default function App() {
       <AuthProvider>
         <CajaProvider>
           <ToastProvider>
+            <SincronizarNegocio />
             <Rutas />
           </ToastProvider>
         </CajaProvider>

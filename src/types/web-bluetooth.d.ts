@@ -29,6 +29,8 @@ interface BluetoothDevice extends EventTarget {
   readonly id: string
   readonly name?: string
   readonly gatt?: BluetoothRemoteGATTServer
+  /** Revoca el permiso concedido a este dispositivo (Chrome 100+). */
+  forget?(): Promise<void>
 }
 
 interface RequestDeviceOptions {

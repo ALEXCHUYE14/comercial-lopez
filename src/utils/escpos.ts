@@ -5,7 +5,8 @@
 // logo, igual al ticket que ya se ve en pantalla) para que ambas vias de
 // impresion muestren siempre la misma informacion.
 import { money, fechaHora } from '@/utils/format'
-import { BRAND } from '@/config/brand'
+import { getNegocio, textoDocumento } from '@/config/negocio'
+import type { QrTermico } from '@/utils/qrTermico'
 import type { TicketDatos, TicketLinea } from '@/utils/ticket'
 
 const ETIQUETA_METODO: Record<string, string> = {
@@ -74,6 +75,34 @@ function textoABytes(texto: string): number[] {
   return bytes
 }
 
+/** Parte un texto en lineas de a lo sumo `ancho` columnas sin cortar palabras
+ * (salvo palabras mas largas que el ancho). Sin esto la impresora envuelve
+ * por su cuenta a mitad de palabra, y un nombre de negocio o direccion largos
+ * — ahora editables — saldrian cortados feo. */
+function envolver(texto: string, ancho = COLUMNAS): string[] {
+  const lineas: string[] = []
+  let actual = ''
+  for (const palabraOriginal of texto.split(/\s+/).filter(Boolean)) {
+    let palabra = palabraOriginal
+    while (palabra.length > ancho) {
+      if (actual) {
+        lineas.push(actual)
+        actual = ''
+      }
+      lineas.push(palabra.slice(0, ancho))
+      palabra = palabra.slice(ancho)
+    }
+    if (!actual) actual = palabra
+    else if (actual.length + 1 + palabra.length <= ancho) actual += ' ' + palabra
+    else {
+      lineas.push(actual)
+      actual = palabra
+    }
+  }
+  if (actual) lineas.push(actual)
+  return lineas.length ? lineas : ['']
+}
+
 // Exportada (ademas de usarse internamente en este archivo) para que otros
 // tickets termicos del sistema — ej. el cierre de turno en ticketCierre.ts —
 // puedan reutilizar exactamente los mismos comandos ESC/POS y helpers de
@@ -93,7 +122,9 @@ export class ConstructorTicket {
   }
 
   centro(texto: string) {
-    return this.raw([...CMD.alinearCentro]).linea(texto).raw([...CMD.alinearIzq])
+    this.raw([...CMD.alinearCentro])
+    for (const l of envolver(texto)) this.linea(l)
+    return this.raw([...CMD.alinearIzq])
   }
 
   negrita(texto: string) {
@@ -101,9 +132,24 @@ export class ConstructorTicket {
   }
 
   tituloGrande(texto: string) {
-    return this.raw([...CMD.alinearCentro, ...CMD.negritaOn, ...CMD.altoDobleOn])
-      .linea(texto)
-      .raw([...CMD.altoDobleOff, ...CMD.negritaOff, ...CMD.alinearIzq])
+    this.raw([...CMD.alinearCentro, ...CMD.negritaOn, ...CMD.altoDobleOn])
+    for (const l of envolver(texto)) this.linea(l)
+    return this.raw([...CMD.altoDobleOff, ...CMD.negritaOff, ...CMD.alinearIzq])
+  }
+
+  /** Imagen 1-bit (ya en blanco y negro, ver utils/qrTermico.ts) centrada,
+   * con el comando raster GS v 0. Se centra porque el bitmap del QR es mas
+   * angosto que el papel. */
+  imagen(img: QrTermico) {
+    const { anchoBytes, alto, datos } = img
+    return this.raw([...CMD.alinearCentro])
+      .raw([
+        GS, 0x76, 0x30, 0x00,
+        anchoBytes & 0xff, (anchoBytes >> 8) & 0xff,
+        alto & 0xff, (alto >> 8) & 0xff,
+      ])
+      .raw(Array.from(datos))
+      .raw([...CMD.alinearIzq])
   }
 
   texto(texto = '') {
@@ -162,12 +208,22 @@ export class ConstructorTicket {
 
 /**
  * Arma los bytes ESC/POS del ticket de venta — mismo contenido que
- * construirTicketHtml (sin logo), listo para enviarse por Bluetooth.
+ * construirTicketHtml (sin logo), listo para enviarse por Bluetooth. `qr` es
+ * el QR de Yape ya convertido a blanco y negro (ver qrParaTicket en
+ * utils/qrTermico.ts), o null/undefined si el ticket no lleva QR.
  */
-export function construirTicketEscPos(venta: TicketDatos, lineas: TicketLinea[]): Uint8Array<ArrayBuffer> {
+export function construirTicketEscPos(
+  venta: TicketDatos,
+  lineas: TicketLinea[],
+  qr?: QrTermico | null,
+): Uint8Array<ArrayBuffer> {
   const t = new ConstructorTicket()
+  const negocio = getNegocio()
 
-  t.tituloGrande(BRAND.nombre.toUpperCase())
+  t.tituloGrande(negocio.nombre.toUpperCase())
+  const documento = textoDocumento(negocio)
+  if (documento) t.centro(documento)
+  if (negocio.direccion) t.centro(negocio.direccion)
   t.centro(fechaHora(venta.creadoEn))
   t.centro(`Cajero: ${venta.cajeroNombre ?? '-'}`)
   // numero=0 = venta registrada offline, aun sin numero correlativo real
@@ -215,6 +271,10 @@ export function construirTicketEscPos(venta: TicketDatos, lineas: TicketLinea[])
   t.saltar(1)
   t.centro('¡Gracias por su compra!')
   t.centro('Vuelva pronto')
+
+  if (qr) {
+    t.saltar(1).centro('Escanea con Yape').imagen(qr)
+  }
 
   return t.finalizar()
 }

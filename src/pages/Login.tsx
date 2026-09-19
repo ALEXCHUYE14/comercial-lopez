@@ -3,8 +3,10 @@ import { Eye, EyeOff, LogIn, MessageCircle } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Button } from '@/components/ui/Button'
 import { BRAND } from '@/config/brand'
+import { useNegocio } from '@/config/negocio'
 
-const WA_SOPORTE = `https://wa.me/${BRAND.whatsappSoporte}?text=Hola,%20tengo%20problemas%20para%20acceder%20al%20sistema%20de%20${encodeURIComponent(BRAND.nombre)}.`
+const urlSoporte = (nombreNegocio: string) =>
+  `https://wa.me/${BRAND.whatsappSoporte}?text=Hola,%20tengo%20problemas%20para%20acceder%20al%20sistema%20de%20${encodeURIComponent(nombreNegocio)}.`
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Propiedades CSS de la columna izquierda (imagen de fondo).
@@ -23,6 +25,7 @@ const leftColBgStyle: React.CSSProperties = {
 
 export function Login() {
   const { signIn } = useAuth()
+  const { nombre: nombreNegocio } = useNegocio()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [verPass, setVerPass] = useState(false)
@@ -119,7 +122,7 @@ export function Login() {
             <div style={{ textAlign: 'center', marginBottom: '20px' }}>
               <img
                 src="/img/logo.png"
-                alt={BRAND.nombre}
+                alt={nombreNegocio}
                 style={{
                   width: '80px',
                   height: '80px',
@@ -143,7 +146,7 @@ export function Login() {
                 color: '#0e0e0d',
                 margin: '0 0 6px 0',
               }}>
-                {BRAND.nombre}
+                {nombreNegocio}
               </h1>
               <p style={{ fontSize: '0.875rem', color: '#888', margin: 0 }}>
                 Ingresa tus credenciales para continuar
@@ -216,7 +219,7 @@ export function Login() {
             ¿Problemas para acceder?
           </p>
           <a
-            href={WA_SOPORTE}
+            href={urlSoporte(nombreNegocio)}
             target="_blank"
             rel="noopener noreferrer"
             style={{
@@ -244,7 +247,7 @@ export function Login() {
             Contactar soporte por WhatsApp
           </a>
           <p style={{ marginTop: '12px', fontSize: '0.7rem', color: '#bbb' }}>
-            Acceso exclusivo para personal autorizado · {BRAND.nombre}
+            Acceso exclusivo para personal autorizado · {nombreNegocio}
           </p>
         </div>
       </div>

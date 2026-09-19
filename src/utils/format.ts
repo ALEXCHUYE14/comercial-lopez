@@ -68,6 +68,19 @@ export function finDelDia(d = new Date()): Date {
   return x
 }
 
+// Escapa texto para insertarlo en las plantillas HTML de los tickets. Los
+// tickets se arman como strings y se escriben con document.write en una
+// ventana same-origin: sin escapar, un nombre de negocio/cajero/cliente con
+// "<" o comillas romperia el ticket (o inyectaria HTML/scripts en la app).
+export function escaparHtml(texto: string | number | null | undefined): string {
+  return String(texto ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 // Une clases condicionalmente sin dependencias externas
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')

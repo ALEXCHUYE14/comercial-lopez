@@ -4,10 +4,11 @@ import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cantidad } from '@/utils/format'
-import { BRAND } from '@/config/brand'
+import { useNegocio, textoDocumento } from '@/config/negocio'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
+import { qrParaTicket } from '@/utils/qrTermico'
 import type { ItemCarrito, Venta } from '@/types/database'
 
 const ETIQUETA: Record<string, string> = {
@@ -40,7 +41,9 @@ interface Props {
 
 export function Receipt({ open, onClose, venta, items }: Props) {
   const toast = useToast()
+  const negocio = useNegocio()
   const [imprimiendoBt, setImprimiendoBt] = useState(false)
+  const [imprimiendoCable, setImprimiendoCable] = useState(false)
 
   function datosTicket(): { datos: TicketDatos; lineas: TicketLinea[] } {
     const lineas: TicketLinea[] = items.map((i) => ({
@@ -68,12 +71,17 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
   // Impresion por cable (o Bluetooth emparejado como impresora del sistema
   // operativo, si el equipo lo permite): usa el dialogo de impresion nativo.
-  function imprimir() {
+  async function imprimir() {
     const { datos, lineas } = datosTicket()
+    setImprimiendoCable(true)
     try {
-      imprimirTicketHtml(construirTicketHtml(datos, lineas))
+      const { qr, fallo } = await qrParaTicket(datos.metodo, datos.anulada)
+      if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
+      imprimirTicketHtml(construirTicketHtml(datos, lineas, qr))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo abrir la ventana de impresión')
+    } finally {
+      setImprimiendoCable(false)
     }
   }
 
@@ -91,7 +99,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
     setImprimiendoBt(true)
     try {
       const { datos, lineas } = datosTicket()
-      await imprimirPorBluetooth(construirTicketEscPos(datos, lineas))
+      const { qr, fallo } = await qrParaTicket(datos.metodo, datos.anulada)
+      if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
+      await imprimirPorBluetooth(construirTicketEscPos(datos, lineas, qr))
       toast.exito('Ticket enviado a la impresora Bluetooth')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
@@ -108,7 +118,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       footer={
         <div className="flex flex-col gap-2">
           <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={imprimir}>
+            <Button variant="outline" className="flex-1" loading={imprimiendoCable} onClick={imprimir}>
               <Printer className="size-4" /> Imprimir (cable)
             </Button>
             <Button
@@ -141,7 +151,11 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       <div className="rounded-xl border border-dashed border-ink-200 bg-white p-4 font-mono text-[0.75rem] leading-relaxed">
         {/* Cabecera */}
         <div className="mb-2 text-center">
-          <p className="text-sm font-black tracking-wide">{BRAND.nombre.toUpperCase()}</p>
+          <p className="text-sm font-black tracking-wide">{negocio.nombre.toUpperCase()}</p>
+          {textoDocumento(negocio) && (
+            <p className="text-ink-400 text-[0.7rem]">{textoDocumento(negocio)}</p>
+          )}
+          {negocio.direccion && <p className="text-ink-400 text-[0.7rem]">{negocio.direccion}</p>}
           <p className="text-ink-400 text-[0.7rem]">{fechaHora(venta.creado_en)}</p>
           <p className="text-ink-400 text-[0.7rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
           <p className="font-bold text-[0.75rem]">

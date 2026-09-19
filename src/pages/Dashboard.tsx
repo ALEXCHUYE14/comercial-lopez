@@ -30,7 +30,7 @@ import { useProductos } from '@/hooks/useProductos'
 import { useMermas } from '@/hooks/useMermas'
 import { useAlertasArqueo } from '@/hooks/useAlertasArqueo'
 import { supabase } from '@/lib/supabase'
-import { BRAND } from '@/config/brand'
+import { getNegocio } from '@/config/negocio'
 import { Card, Badge } from '@/components/ui/Button'
 import { money, numero, horaCorta, fechaHora, cx, ETIQUETA_PAGO } from '@/utils/format'
 import type { DetalleVenta, Producto } from '@/types/database'
@@ -42,7 +42,7 @@ function enviarResumenVencimiento(items: Producto[]) {
   const lineas = items
     .map((p) => `• ${p.nombre} — vence ${new Date(p.fecha_vencimiento! + 'T00:00:00').toLocaleDateString('es-PE', { day: '2-digit', month: 'short' })}`)
     .join('\n')
-  const msg = `*${BRAND.nombre}* — productos próximos a vencer:\n\n${lineas}`
+  const msg = `*${getNegocio().nombre}* — productos próximos a vencer:\n\n${lineas}`
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer')
 }
 
@@ -50,7 +50,7 @@ function enviarResumenStockBajo(items: Producto[]) {
   const lineas = items
     .map((p) => `• ${p.nombre} — ${p.stock_actual}/${p.stock_minimo} ${p.unidad}`)
     .join('\n')
-  const msg = `*${BRAND.nombre}* — productos con stock bajo, a reponer:\n\n${lineas}`
+  const msg = `*${getNegocio().nombre}* — productos con stock bajo, a reponer:\n\n${lineas}`
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer')
 }
 

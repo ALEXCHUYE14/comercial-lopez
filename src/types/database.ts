@@ -168,6 +168,18 @@ export type ConfiguracionCaja = {
   actualizado_en: string
 }
 
+export type ConfiguracionNegocio = {
+  id: 1
+  nombre: string
+  /** DNI (8 digitos) o RUC (11 digitos); '' si no se configuro. */
+  documento: string
+  direccion: string
+  yape_qr_url: string | null
+  imprimir_qr_yape: boolean
+  actualizado_por: string | null
+  actualizado_en: string
+}
+
 export type AlertaArqueo = {
   id: string
   caja_id: string
@@ -272,6 +284,7 @@ export interface Database {
       mermas: Tabla<Merma>
       egresos: Tabla<Egreso>
       configuracion_caja: Tabla<ConfiguracionCaja>
+      configuracion_negocio: Tabla<ConfiguracionNegocio>
       alertas_arqueo: Tabla<AlertaArqueo>
     }
     Views: Record<string, never>

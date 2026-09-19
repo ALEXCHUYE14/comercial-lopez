@@ -4,7 +4,7 @@
 // construirTicketCierreHtml (ver utils/ticketCierre.ts) para que ambas vias
 // de impresion muestren siempre la misma informacion.
 import { money, fechaHora, horaCorta } from '@/utils/format'
-import { BRAND } from '@/config/brand'
+import { getNegocio, textoDocumento } from '@/config/negocio'
 import { ConstructorTicket } from '@/utils/escpos'
 import type { CajaRegistro, ResultadoArqueo } from '@/types/database'
 
@@ -36,10 +36,12 @@ export function construirTicketCierreEscPos(caja: CajaRegistro): Uint8Array<Arra
   const idTurnoCorto = caja.id.slice(0, 8).toUpperCase()
 
   const t = new ConstructorTicket()
+  const negocio = getNegocio()
 
-  t.tituloGrande(BRAND.nombre.toUpperCase())
-  if (BRAND.ruc) t.centro(`RUC: ${BRAND.ruc}`)
-  if (BRAND.direccion) t.centro(BRAND.direccion)
+  t.tituloGrande(negocio.nombre.toUpperCase())
+  const documento = textoDocumento(negocio)
+  if (documento) t.centro(documento)
+  if (negocio.direccion) t.centro(negocio.direccion)
   t.centro('CIERRE DE TURNO')
   t.centro(fechaHora(caja.cerrada_en ?? new Date().toISOString()))
 
@@ -79,7 +81,7 @@ export function construirTicketCierreEscPos(caja: CajaRegistro): Uint8Array<Arra
   t.saltar(2)
   t.centro('Firma del Administrador / Auditor')
   t.saltar(1)
-  t.centro(BRAND.nombre)
+  t.centro(negocio.nombre)
   t.centro('Documento de uso interno')
 
   return t.finalizar()

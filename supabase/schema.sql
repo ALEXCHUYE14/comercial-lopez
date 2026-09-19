@@ -1,5 +1,5 @@
 -- ============================================================================
---  BODEGUITA CESAR RUIZ - SISTEMA DE GESTION COMERCIAL Y POS
+--  BODEGUITA COMERCIAL LOPEZ - SISTEMA DE GESTION COMERCIAL Y POS
 --  Esquema COMPLETO para Supabase / PostgreSQL
 --  Ejecutar en: Supabase Dashboard > SQL Editor > New query
 -- ============================================================================
@@ -533,6 +533,29 @@ create table if not exists public.configuracion_caja (
 
 comment on table public.configuracion_caja is
   'Fila unica de configuracion global: umbrales de tolerancia del arqueo a ciegas de caja.';
+
+-- ----------------------------------------------------------------------------
+-- 15b-bis. CONFIGURACION DEL NEGOCIO (datos que se imprimen en tickets)
+-- ----------------------------------------------------------------------------
+-- Fila unica (singleton, id fijo = 1), editable solo por el administrador
+-- desde Configuracion: nombre, DNI/RUC y direccion del negocio (encabezado de
+-- los tickets) y la imagen del QR de Yape (bucket "negocio-assets", ver mas
+-- abajo). El frontend cae a src/config/brand.ts si la fila aun no existe.
+create table if not exists public.configuracion_negocio (
+  id                smallint primary key default 1 check (id = 1),
+  nombre            text not null default 'Comercial López JYD EIRL'
+                      check (char_length(btrim(nombre)) between 1 and 80),
+  documento         text not null default ''
+                      check (documento = '' or documento ~ '^([0-9]{8}|[0-9]{11})$'),
+  direccion         text not null default '' check (char_length(direccion) <= 120),
+  yape_qr_url       text,
+  imprimir_qr_yape  boolean not null default true,
+  actualizado_por   uuid references public.perfiles(id) on delete set null,
+  actualizado_en    timestamptz not null default now()
+);
+
+comment on table public.configuracion_negocio is
+  'Fila unica de configuracion global: nombre, DNI/RUC, direccion y QR de Yape que se imprimen en los tickets.';
 
 -- ----------------------------------------------------------------------------
 -- 15c. ALERTAS DE ARQUEO (descuadres de caja fuera de tolerancia)
@@ -1366,6 +1389,7 @@ alter table public.detalle_compras         enable row level security;
 alter table public.mermas                  enable row level security;
 alter table public.egresos                 enable row level security;
 alter table public.configuracion_caja      enable row level security;
+alter table public.configuracion_negocio   enable row level security;
 alter table public.alertas_arqueo          enable row level security;
 
 -- PERFILES
@@ -1498,6 +1522,37 @@ drop policy if exists config_caja_write on public.configuracion_caja;
 create policy config_caja_write on public.configuracion_caja for all
   to authenticated using (public.es_admin()) with check (public.es_admin());
 
+-- CONFIGURACION_NEGOCIO
+-- Todos los usuarios autenticados la leen (los tickets de cualquier cajero
+-- llevan el nombre/RUC del negocio); solo el administrador la modifica.
+drop policy if exists config_negocio_select on public.configuracion_negocio;
+create policy config_negocio_select on public.configuracion_negocio for select
+  to authenticated using (true);
+drop policy if exists config_negocio_write on public.configuracion_negocio;
+create policy config_negocio_write on public.configuracion_negocio for all
+  to authenticated using (public.es_admin()) with check (public.es_admin());
+
+-- STORAGE: bucket "negocio-assets" (imagen del QR de Yape). Publico para
+-- lectura (el QR se muestra en el cobro y se imprime en el ticket); solo el
+-- administrador puede subir, reemplazar o borrar archivos.
+insert into storage.buckets (id, name, public)
+values ('negocio-assets', 'negocio-assets', true)
+on conflict (id) do nothing;
+
+drop policy if exists negocio_assets_select on storage.objects;
+create policy negocio_assets_select on storage.objects for select
+  using (bucket_id = 'negocio-assets');
+drop policy if exists negocio_assets_insert on storage.objects;
+create policy negocio_assets_insert on storage.objects for insert
+  to authenticated with check (bucket_id = 'negocio-assets' and public.es_admin());
+drop policy if exists negocio_assets_update on storage.objects;
+create policy negocio_assets_update on storage.objects for update
+  to authenticated using (bucket_id = 'negocio-assets' and public.es_admin())
+  with check (bucket_id = 'negocio-assets' and public.es_admin());
+drop policy if exists negocio_assets_delete on storage.objects;
+create policy negocio_assets_delete on storage.objects for delete
+  to authenticated using (bucket_id = 'negocio-assets' and public.es_admin());
+
 -- ALERTAS_ARQUEO
 -- Solo administrador/supervisor pueden ver el feed de auditoria de
 -- descuadres. El INSERT ocurre unicamente desde cerrar_caja_arqueo (security
@@ -1569,6 +1624,11 @@ on conflict (sku) do nothing;
 -- S/ 20.00 alerta critica) — el administrador puede ajustarlos desde
 -- Configuracion sin volver a correr este script.
 insert into public.configuracion_caja (id) values (1)
+on conflict (id) do nothing;
+
+-- Datos del negocio por defecto — el administrador los edita desde
+-- Configuracion > Datos del negocio.
+insert into public.configuracion_negocio (id) values (1)
 on conflict (id) do nothing;
 
 -- ============================================================================

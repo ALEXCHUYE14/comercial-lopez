@@ -11,7 +11,7 @@ import {
   Download,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import { BRAND } from '@/config/brand'
+import { getNegocio, useNegocio, textoDocumento } from '@/config/negocio'
 import { useAuth } from '@/context/AuthContext'
 import { useCajaCtx } from '@/context/CajaContext'
 import { Card, Badge, Button, Spinner } from '@/components/ui/Button'
@@ -31,6 +31,7 @@ import { descargarCSV } from '@/utils/csv'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
+import { qrParaTicket } from '@/utils/qrTermico'
 import type { DetalleVenta, MetodoPago, Perfil, Venta } from '@/types/database'
 
 // ── Rangos de fecha alineados a calendario (semana/quincena/mes) ─────────────
@@ -196,7 +197,7 @@ export function Ventas() {
 
   function exportarCSV() {
     const filas: (string | number)[][] = [
-      [`Reporte de ventas — ${BRAND.nombre}`],
+      [`Reporte de ventas — ${getNegocio().nombre}`],
       [`Periodo: ${fechaCorta(`${desde}T00:00:00`)} al ${fechaCorta(`${hasta}T00:00:00`)}`],
       [`Generado: ${fechaHora(new Date().toISOString())}`],
       [],
@@ -638,6 +639,7 @@ function TicketReprint({
   onAnulada: () => void
 }) {
   const toast = useToast()
+  const negocio = useNegocio()
   const [detalle, setDetalle] = useState<DetalleVenta[]>([])
   const [cargando, setCargando] = useState(false)
   const [anulando, setAnulando] = useState(false)
@@ -705,11 +707,13 @@ function TicketReprint({
     return { datos, lineas }
   }
 
-  function imprimir() {
+  async function imprimir() {
     const t = datosTicket()
     if (!t) return
     try {
-      imprimirTicketHtml(construirTicketHtml(t.datos, t.lineas))
+      const { qr, fallo } = await qrParaTicket(t.datos.metodo, t.datos.anulada)
+      if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
+      imprimirTicketHtml(construirTicketHtml(t.datos, t.lineas, qr))
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo abrir la ventana de impresión')
     }
@@ -726,7 +730,9 @@ function TicketReprint({
     }
     setImprimiendoBt(true)
     try {
-      await imprimirPorBluetooth(construirTicketEscPos(t.datos, t.lineas))
+      const { qr, fallo } = await qrParaTicket(t.datos.metodo, t.datos.anulada)
+      if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
+      await imprimirPorBluetooth(construirTicketEscPos(t.datos, t.lineas, qr))
       toast.exito('Ticket enviado a la impresora Bluetooth')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo imprimir por Bluetooth')
@@ -785,7 +791,11 @@ function TicketReprint({
 
       <div className="rounded-xl border border-dashed border-ink-200 p-4 font-sans text-sm">
         <div className="mb-3 text-center">
-          <p className="font-display text-base font-bold">{BRAND.nombre.toUpperCase()}</p>
+          <p className="font-display text-base font-bold">{negocio.nombre.toUpperCase()}</p>
+          {textoDocumento(negocio) && (
+            <p className="text-xs text-ink-400">{textoDocumento(negocio)}</p>
+          )}
+          {negocio.direccion && <p className="text-xs text-ink-400">{negocio.direccion}</p>}
           <p className="text-xs text-ink-400">{fechaHora(venta.creado_en)}</p>
           <p className="text-xs text-ink-400">Cajero: {venta.cajero_nombre ?? '-'}</p>
           <p className="text-xs text-ink-400">Comprobante #{venta.numero}</p>

@@ -10,8 +10,8 @@
 // cerrar_caja_arqueo). Nunca se debe mostrar/imprimir el desglose de este
 // ticket ANTES de esa confirmacion — eso filtraria el efectivo esperado y
 // arruinaria el proposito del arqueo a ciegas.
-import { money, fechaHora, horaCorta } from '@/utils/format'
-import { BRAND } from '@/config/brand'
+import { money, fechaHora, horaCorta, escaparHtml } from '@/utils/format'
+import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { CajaRegistro, ResultadoArqueo } from '@/types/database'
 
 const ETIQUETA_ESTADO: Record<ResultadoArqueo, string> = {
@@ -59,9 +59,10 @@ export function construirTicketCierreHtml(caja: CajaRegistro): string {
     caja.resultado_arqueo === 'ok' ? '#065f46' : caja.resultado_arqueo === 'observado' ? '#92400e' : '#991b1b'
 
   const idTurnoCorto = caja.id.slice(0, 8).toUpperCase()
-  const encabezadoDireccion = [BRAND.ruc ? `RUC: ${BRAND.ruc}` : '', BRAND.direccion]
+  const negocio = getNegocio()
+  const encabezadoDireccion = [textoDocumento(negocio), negocio.direccion]
     .filter(Boolean)
-    .map((l) => `<div class="sub-header">${l}</div>`)
+    .map((l) => `<div class="sub-header">${escaparHtml(l)}</div>`)
     .join('')
 
   return `<!DOCTYPE html>
@@ -108,7 +109,7 @@ export function construirTicketCierreHtml(caja: CajaRegistro): string {
 <body>
 
   <div class="header">
-    <div class="nombre-negocio">${BRAND.nombre.toUpperCase()}</div>
+    <div class="nombre-negocio">${escaparHtml(negocio.nombre.toUpperCase())}</div>
     ${encabezadoDireccion}
     <div class="titulo-ticket">CIERRE DE TURNO</div>
     <div class="sub-header">${fechaHora(caja.cerrada_en ?? new Date().toISOString())}</div>
@@ -117,7 +118,7 @@ export function construirTicketCierreHtml(caja: CajaRegistro): string {
   <hr class="sep-solid"/>
 
   <div class="row"><span>N° Turno</span><span>${idTurnoCorto}</span></div>
-  <div class="row"><span>Cajero</span><span>${caja.cajero_nombre ?? '-'}</span></div>
+  <div class="row"><span>Cajero</span><span>${escaparHtml(caja.cajero_nombre ?? '-')}</span></div>
   <div class="row"><span>Apertura</span><span>${horaCorta(caja.abierta_en)}</span></div>
   <div class="row"><span>Cierre</span><span>${horaCorta(caja.cerrada_en ?? new Date().toISOString())}</span></div>
 
@@ -155,7 +156,7 @@ export function construirTicketCierreHtml(caja: CajaRegistro): string {
   </div>
 
   <div class="footer">
-    <div>${BRAND.nombre}</div>
+    <div>${escaparHtml(negocio.nombre)}</div>
     <div>Documento de uso interno — control de caja</div>
   </div>
 

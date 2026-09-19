@@ -3,6 +3,7 @@ import { Banknote, Smartphone, HandCoins, Check, Search } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { money, cx } from '@/utils/format'
+import { useNegocio } from '@/config/negocio'
 import type { ClienteCredito, MetodoPago } from '@/types/database'
 
 interface Props {
@@ -30,6 +31,10 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
   const [recibido, setRecibido] = useState('')
   const [busqCliente, setBusqCliente] = useState('')
   const [clienteId, setClienteId] = useState<string | null>(null)
+  const { yapeQrUrl } = useNegocio()
+  // URL cuyo QR fallo al cargar (sin internet, archivo borrado): se oculta la
+  // imagen rota y el cobro sigue funcionando igual, sin QR en pantalla.
+  const [qrRoto, setQrRoto] = useState<string | null>(null)
 
   const metodosDisponibles = useMemo(
     () => (offline ? METODOS.filter((m) => m.id !== 'fiado') : METODOS),
@@ -215,6 +220,17 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
             <p className="mt-0.5 text-xs text-blue-500">
               Confirma que el cliente haya completado la transferencia antes de procesar.
             </p>
+            {yapeQrUrl && qrRoto !== yapeQrUrl && (
+              <div className="mt-3 flex flex-col items-center gap-1.5">
+                <img
+                  src={yapeQrUrl}
+                  alt="Código QR de Yape del negocio"
+                  className="size-52 max-w-full rounded-xl border border-blue-100 bg-white object-contain p-2"
+                  onError={() => setQrRoto(yapeQrUrl)}
+                />
+                <p className="text-xs text-blue-500">El cliente escanea este código con Yape</p>
+              </div>
+            )}
           </div>
         )}
 
