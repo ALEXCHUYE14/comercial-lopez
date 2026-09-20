@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from 'react'
 import {
   Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert,
-  UserPlus, Eye, EyeOff, Store, QrCode, Upload, Trash2, Image as ImageIcon,
+  UserPlus, Eye, EyeOff, Store, QrCode, Upload, Trash2,
 } from 'lucide-react'
 import { Card, Button, Badge, Spinner } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
@@ -530,6 +530,9 @@ function DatosNegocio() {
 
 // QR de Yape del negocio: se muestra al cobrar con Yape (POS) y, si esta
 // activada la opcion, se imprime en los tickets de ventas pagadas con Yape.
+// La imagen se sube arrastrandola a la zona punteada o tocandola (abre el
+// selector de archivos); ambos caminos pasan por subirArchivo(), que valida
+// tipo y tamaño en el hook.
 function QrYape() {
   const { perfil } = useAuth()
   const toast = useToast()
@@ -537,22 +540,53 @@ function QrYape() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [cambiandoOpcion, setCambiandoOpcion] = useState(false)
   const [previewRoto, setPreviewRoto] = useState(false)
+  const [arrastrando, setArrastrando] = useState(false)
+  // dragenter/dragleave se disparan tambien al pasar sobre los hijos de la
+  // zona; sin este contador el resaltado parpadearia.
+  const profundidadArrastre = useRef(0)
 
   useEffect(() => {
     setPreviewRoto(false)
   }, [negocio.yapeQrUrl])
 
-  async function alElegirArchivo(e: ChangeEvent<HTMLInputElement>) {
-    const archivo = e.target.files?.[0]
-    // Se limpia el input para poder volver a elegir el mismo archivo despues.
-    e.target.value = ''
-    if (!archivo) return
+  async function subirArchivo(archivo: File | undefined | null) {
+    if (!archivo || subiendoQr) return
     try {
       await subirQr(archivo, perfil?.id ?? null)
       toast.exito('QR de Yape guardado')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'No se pudo subir el QR')
     }
+  }
+
+  function alElegirArchivo(e: ChangeEvent<HTMLInputElement>) {
+    const archivo = e.target.files?.[0]
+    // Se limpia el input para poder volver a elegir el mismo archivo despues.
+    e.target.value = ''
+    void subirArchivo(archivo)
+  }
+
+  function abrirSelector() {
+    if (!subiendoQr) inputRef.current?.click()
+  }
+
+  function alSoltar(e: DragEvent<HTMLDivElement>) {
+    // preventDefault evita que el navegador abra la imagen soltada en la pestaña.
+    e.preventDefault()
+    profundidadArrastre.current = 0
+    setArrastrando(false)
+    void subirArchivo(e.dataTransfer.files?.[0])
+  }
+
+  function alEntrarArrastre(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    profundidadArrastre.current += 1
+    if (!subiendoQr) setArrastrando(true)
+  }
+
+  function alSalirArrastre() {
+    profundidadArrastre.current = Math.max(0, profundidadArrastre.current - 1)
+    if (profundidadArrastre.current === 0) setArrastrando(false)
   }
 
   async function alQuitar() {
@@ -579,6 +613,7 @@ function QrYape() {
   }
 
   const tieneQr = !!negocio.yapeQrUrl
+  const mostrarImagen = tieneQr && !previewRoto
 
   return (
     <Card className="overflow-hidden">
@@ -591,66 +626,107 @@ function QrYape() {
         </p>
       </div>
       <div className="space-y-4 p-5">
-        <div className="flex flex-wrap items-start gap-5">
-          <div className="grid size-40 shrink-0 place-items-center overflow-hidden rounded-2xl border border-dashed border-ink-200 bg-white">
-            {tieneQr && !previewRoto ? (
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          className="hidden"
+          onChange={alElegirArchivo}
+        />
+
+        {/* Zona de arrastrar y soltar (tambien se puede tocar / usar el teclado) */}
+        <div
+          role="button"
+          tabIndex={0}
+          aria-busy={subiendoQr}
+          aria-label={tieneQr ? 'Reemplazar imagen del QR de Yape' : 'Subir imagen del QR de Yape'}
+          onClick={abrirSelector}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              abrirSelector()
+            }
+          }}
+          onDragEnter={alEntrarArrastre}
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={alSalirArrastre}
+          onDrop={alSoltar}
+          className={cx(
+            'relative grid min-h-56 cursor-pointer place-items-center rounded-2xl border-2 border-dashed px-4 py-8 text-center transition focusable',
+            arrastrando
+              ? 'border-accent-500 bg-accent-50'
+              : 'border-ink-200 bg-ink-50 hover:border-accent-400 hover:bg-accent-50',
+            subiendoQr && 'cursor-wait opacity-70',
+          )}
+        >
+          {mostrarImagen ? (
+            <div className="flex flex-col items-center gap-3">
               <img
                 src={negocio.yapeQrUrl ?? undefined}
                 alt="QR de Yape"
-                className="size-full object-contain p-2"
+                className="size-44 rounded-xl border border-ink-100 bg-white object-contain p-2 shadow-soft"
                 onError={() => setPreviewRoto(true)}
               />
-            ) : (
-              <div className="px-3 text-center text-xs text-ink-400">
-                <ImageIcon className="mx-auto mb-1 size-6 text-ink-300" />
-                {tieneQr ? 'No se pudo cargar la imagen' : 'Aún no hay un QR cargado'}
-              </div>
-            )}
-          </div>
-          <div className="min-w-0 flex-1 space-y-3">
-            <input
-              ref={inputRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              className="hidden"
-              onChange={alElegirArchivo}
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                loading={subiendoQr}
-                onClick={() => inputRef.current?.click()}
-              >
-                <Upload className="size-4" /> {tieneQr ? 'Cambiar imagen' : 'Subir imagen del QR'}
-              </Button>
-              {tieneQr && (
-                <Button variant="outline" size="sm" disabled={subiendoQr} onClick={alQuitar}>
-                  <Trash2 className="size-4" /> Quitar
-                </Button>
-              )}
+              <p className="text-xs text-ink-400">
+                Arrastra otra imagen aquí o toca para reemplazarla
+              </p>
             </div>
-            <p className="text-xs text-ink-400">
-              Usa una imagen que muestre solo el código QR (recórtala si es una captura de pantalla), PNG o JPG
-              de hasta 8 MB. Para que se imprima nítido en la térmica, el QR debe verse con buen contraste.
-            </p>
-            <label
-              className={cx(
-                'flex items-start gap-2.5 text-sm text-ink-700',
-                !tieneQr && 'opacity-50',
-              )}
-            >
-              <input
-                type="checkbox"
-                className="mt-0.5 size-4 rounded border-ink-300"
-                checked={negocio.imprimirQrYape}
-                disabled={!tieneQr || cambiandoOpcion}
-                onChange={(e) => alCambiarOpcion(e.target.checked)}
-              />
-              <span>Imprimir el QR en los tickets de ventas pagadas con Yape</span>
-            </label>
-          </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <span className="grid size-12 place-items-center rounded-full bg-accent-100 text-accent-700">
+                <Upload className="size-5" />
+              </span>
+              <p className="text-sm font-semibold text-ink-800">
+                {arrastrando ? 'Suelta la imagen para subirla' : 'Arrastra tu código QR aquí o toca para elegirlo'}
+              </p>
+              <p className="text-xs text-ink-400">
+                {previewRoto
+                  ? 'No se pudo cargar la imagen guardada: sube el QR de nuevo.'
+                  : 'PNG o JPG de hasta 8 MB. Sube solo el código QR (recórtalo si es una captura de pantalla).'}
+              </p>
+            </div>
+          )}
+
+          {subiendoQr && (
+            <div className="absolute inset-0 grid place-items-center rounded-2xl bg-white/70">
+              <span className="flex items-center gap-2 text-sm font-medium text-ink-600">
+                <Spinner className="size-4" /> Subiendo…
+              </span>
+            </div>
+          )}
         </div>
+
+        {tieneQr && (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" disabled={subiendoQr} onClick={abrirSelector}>
+              <Upload className="size-4" /> Cambiar imagen
+            </Button>
+            <Button variant="outline" size="sm" disabled={subiendoQr} onClick={alQuitar}>
+              <Trash2 className="size-4" /> Quitar
+            </Button>
+          </div>
+        )}
+
+        <label
+          className={cx(
+            'flex items-start gap-2.5 text-sm text-ink-700',
+            (!tieneQr || cambiandoOpcion) && 'opacity-50',
+          )}
+        >
+          <input
+            type="checkbox"
+            className="mt-0.5 size-4 rounded border-ink-300"
+            checked={negocio.imprimirQrYape}
+            disabled={!tieneQr || cambiandoOpcion}
+            onChange={(e) => alCambiarOpcion(e.target.checked)}
+          />
+          <span>
+            Imprimir el QR en los tickets de ventas pagadas con Yape
+            <span className="block text-xs text-ink-400">
+              Para que se imprima nítido en la térmica, el QR debe verse con buen contraste.
+            </span>
+          </span>
+        </label>
       </div>
     </Card>
   )
