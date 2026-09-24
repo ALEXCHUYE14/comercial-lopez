@@ -44,7 +44,12 @@ export type ClavePresentacion =
   | 'arroba'
   | 'medio_kilo'
   | 'cuarto_kilo'
+  | 'octavo_kilo'
+  | 'paquete'
+  | 'medio_paquete'
+  | 'cuarto_paquete'
   | 'docena'
+  | 'media_docena'
   | 'cuarto_docena'
 export type ModalidadVenta = 'unidad' | 'caja' | 'saco' | ClavePresentacion | (string & {})
 export type TipoVenta = 'unidad' | 'granel'

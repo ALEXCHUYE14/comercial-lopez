@@ -10,13 +10,17 @@ import { cx, cantidad } from '@/utils/format'
 import { beepExito, desbloquearAudioScanner } from '@/utils/beep'
 import {
   CATALOGO_PRESENTACIONES,
-  CLAVES_POR_TIPO,
+  clavesDisponibles,
   factorSugerido,
   presentacionesDe,
 } from '@/utils/presentaciones'
 import type { Categoria, ClavePresentacion, Presentacion, Producto, TipoVenta } from '@/types/database'
 
-const UNIDADES_GRANEL = ['kg', 'g', 'litro', 'ml', 'arroba']
+const UNIDADES_GRANEL = ['kg', 'g', 'litro', 'ml', 'arroba', 'paquete']
+// "paquete" aparece en ambas listas a propósito: puede ser una pieza entera
+// (tipo_venta 'unidad', ej. una bolsa de fideos que se vende cerrada) o una
+// unidad base fraccionable (tipo_venta 'granel', ej. medio/cuarto de paquete).
+const UNIDADES_UNIDAD = ['unidad', 'paquete', 'caja', 'docena']
 
 // Estado del formulario para las presentaciones adicionales (arroba, medio
 // kilo, docena, ...): los campos se guardan como texto (como el resto del form)
@@ -28,7 +32,12 @@ const presInicial = (): EstadoPresentaciones => ({
   arroba: { on: false, factor: '', precio: '' },
   medio_kilo: { on: false, factor: '', precio: '' },
   cuarto_kilo: { on: false, factor: '', precio: '' },
+  octavo_kilo: { on: false, factor: '', precio: '' },
+  paquete: { on: false, factor: '', precio: '' },
+  medio_paquete: { on: false, factor: '', precio: '' },
+  cuarto_paquete: { on: false, factor: '', precio: '' },
   docena: { on: false, factor: '', precio: '' },
+  media_docena: { on: false, factor: '', precio: '' },
   cuarto_docena: { on: false, factor: '', precio: '' },
 })
 
@@ -143,7 +152,10 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
     } else {
       // "Venta por saco" solo aplica a granel.
       setTieneSaco(false)
-      if (UNIDADES_GRANEL.includes(f.unidad)) set('unidad', 'unidad')
+      // "paquete" es valida en ambas listas (ver UNIDADES_GRANEL/UNIDADES_UNIDAD
+      // arriba): solo se resetea la unidad si NO es valida para el nuevo tipo,
+      // para no perder la eleccion del usuario al alternar el interruptor.
+      if (!UNIDADES_UNIDAD.includes(f.unidad)) set('unidad', 'unidad')
     }
   }
 
@@ -227,7 +239,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       }
     }
     const presentaciones: Presentacion[] = []
-    for (const clave of CLAVES_POR_TIPO[tipoVenta]) {
+    for (const clave of clavesDisponibles(tipoVenta, f.unidad)) {
       const e = pres[clave]
       if (!e.on) continue
       const nombre = CATALOGO_PRESENTACIONES[clave].nombre
@@ -314,6 +326,10 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
   }
 
   const imagenActual = imagePreview ?? (f.image_url || null)
+  // Presentaciones ofrecibles con la combinacion actual de tipo de venta +
+  // unidad base exacta (ej. "paquete" habilita medio/cuarto de paquete; "kg"
+  // habilita arroba y fracciones de kilo; "litro" no tiene predefinidas).
+  const clavesPres = clavesDisponibles(tipoVenta, f.unidad)
 
   return (
     <Sheet
@@ -411,7 +427,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
               value={f.unidad}
               onChange={(e) => set('unidad', e.target.value)}
             >
-              {(esGranel ? UNIDADES_GRANEL : ['unidad', 'paquete', 'caja', 'docena']).map((u) => (
+              {(esGranel ? UNIDADES_GRANEL : UNIDADES_UNIDAD).map((u) => (
                 <option key={u} value={u}>
                   {u}
                 </option>
@@ -631,19 +647,22 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
         </div>
         )}
 
-        {/* Otras presentaciones de venta: arroba / fracciones de kilo (granel),
-            docena / cuarto de docena (por unidad). El stock se lleva siempre en
-            la unidad base elegida arriba; cada presentación solo define cuánto
-            de ese stock consume y a qué precio se vende. */}
+        {/* Otras presentaciones de venta: arroba / fracciones de kilo o de
+            paquete (granel), docena / cuarto de docena (por unidad). El stock
+            se lleva siempre en la unidad base elegida arriba; cada
+            presentación solo define cuánto de ese stock consume y a qué
+            precio se vende. Se oculta por completo si la unidad base elegida
+            no tiene presentaciones predefinidas (ej. litro, ml). */}
+        {clavesPres.length > 0 && (
         <div className="rounded-xl border border-ink-100 p-3">
           <p className="text-sm font-semibold text-ink-800">Otras presentaciones de venta</p>
           <p className="text-xs text-ink-400">
             {esGranel
-              ? `Vende también por arroba o fracciones de kilo. El stock siempre se lleva en ${f.unidad}.`
-              : 'Vende también por docena o cuarto de docena. El stock siempre se lleva en la unidad base.'}
+              ? `Vende también fraccionado (ej. medio, cuarto u octavo). El stock siempre se lleva en ${f.unidad}.`
+              : 'Vende también por docena, media docena o cuarto de docena. El stock siempre se lleva en la unidad base.'}
           </p>
           <div className="mt-3 space-y-2.5">
-            {CLAVES_POR_TIPO[tipoVenta].map((clave) => {
+            {clavesPres.map((clave) => {
               const e = pres[clave]
               const nombre = CATALOGO_PRESENTACIONES[clave].nombre.toLowerCase()
               const etqBase = esGranel ? f.unidad : 'unidades'
@@ -701,6 +720,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
             })}
           </div>
         </div>
+        )}
 
         {/* Foto del producto */}
         <div>

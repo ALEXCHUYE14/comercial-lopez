@@ -18,25 +18,58 @@ export const CATALOGO_PRESENTACIONES: Record<ClavePresentacion, { nombre: string
   arroba: { nombre: 'Arroba', tipo: 'granel' },
   medio_kilo: { nombre: 'Medio kilo', tipo: 'granel' },
   cuarto_kilo: { nombre: 'Cuarto de kilo', tipo: 'granel' },
+  octavo_kilo: { nombre: 'Octavo de kilo', tipo: 'granel' },
+  // "Paquete" como PRESENTACIÓN (no como unidad base): equivalente de 1
+  // paquete completo cuando el stock se lleva en kg/g, ej. fideos que se
+  // pesan por kilo pero también se venden por paquete/medio/cuarto de
+  // paquete. Cuando la unidad base YA ES "paquete" no aparece (seria
+  // redundante con el precio base — ver CLAVES_GRANEL_POR_UNIDAD).
+  paquete: { nombre: 'Paquete', tipo: 'granel' },
+  medio_paquete: { nombre: 'Medio paquete', tipo: 'granel' },
+  cuarto_paquete: { nombre: 'Cuarto de paquete', tipo: 'granel' },
   docena: { nombre: 'Docena', tipo: 'unidad' },
+  media_docena: { nombre: 'Media docena', tipo: 'unidad' },
   cuarto_docena: { nombre: 'Cuarto de docena', tipo: 'unidad' },
 }
 
-/** Presentaciones que se pueden configurar según el tipo de venta del producto. */
-export const CLAVES_POR_TIPO: Record<TipoVenta, ClavePresentacion[]> = {
-  granel: ['arroba', 'medio_kilo', 'cuarto_kilo'],
-  unidad: ['docena', 'cuarto_docena'],
+// Qué presentaciones adicionales tiene sentido ofrecer, según el tipo de venta
+// Y la unidad base EXACTA del producto: "Medio kilo" no tiene sentido si la
+// base es litros. Las presentaciones de "paquete" SÍ se ofrecen junto con las
+// de peso (kg/g) — ej. fideos que se pesan por kilo pero también se venden
+// por paquete/medio/cuarto de paquete — pero no cuando la base YA ES
+// "paquete" (ahí "Paquete" seria el mismo precio base, redundante).
+const CLAVES_GRANEL_POR_UNIDAD: Record<string, ClavePresentacion[]> = {
+  kg: ['arroba', 'medio_kilo', 'cuarto_kilo', 'octavo_kilo', 'paquete', 'medio_paquete', 'cuarto_paquete'],
+  g: ['medio_kilo', 'cuarto_kilo', 'octavo_kilo', 'paquete', 'medio_paquete', 'cuarto_paquete'],
+  paquete: ['medio_paquete', 'cuarto_paquete'],
+}
+// Para tipo_venta 'unidad', la docena/media docena/cuarto de docena aplican
+// sin importar cuál sea la unidad base exacta (unidad, paquete, caja, docena:
+// siempre son piezas enteras, solo cambia el nombre de la pieza).
+const CLAVES_UNIDAD: ClavePresentacion[] = ['docena', 'media_docena', 'cuarto_docena']
+
+/** Presentaciones que se pueden configurar para un producto, según su tipo de
+ * venta y la unidad base exacta elegida (kg, g, paquete, litro, ...). Litro/ml
+ * y otras unidades sin presentaciones predefinidas devuelven una lista vacía. */
+export function clavesDisponibles(tipoVenta: TipoVenta, unidadBase: string): ClavePresentacion[] {
+  if (tipoVenta === 'unidad') return CLAVES_UNIDAD
+  return CLAVES_GRANEL_POR_UNIDAD[unidadBase] ?? []
 }
 
 // Equivalencia sugerida al activar una presentación, según la unidad base del
-// stock. Si la unidad base no está aquí (ej. litro, paquete) no se sugiere
-// nada: quien registra el producto indica la equivalencia a mano.
+// stock. Si la unidad base no está aquí no se sugiere nada (ej. "paquete" no
+// tiene un peso universal: el peso de un paquete lo indica cada negocio).
 const FACTOR_SUGERIDO: Record<ClavePresentacion, Record<string, number>> = {
   arroba: { kg: 11.5, g: 11500 },
   medio_kilo: { kg: 0.5, g: 500 },
   cuarto_kilo: { kg: 0.25, g: 250 },
-  docena: { unidad: 12 },
-  cuarto_docena: { unidad: 3 },
+  octavo_kilo: { kg: 0.125, g: 125 },
+  paquete: {},
+  medio_paquete: { paquete: 0.5 },
+  cuarto_paquete: { paquete: 0.25 },
+  docena: { unidad: 12, paquete: 12, caja: 12 },
+  media_docena: { unidad: 6, paquete: 6, caja: 6 },
+  cuarto_docena: { unidad: 3, paquete: 3, caja: 3 },
 }
 
 export function factorSugerido(clave: ClavePresentacion, unidadBase: string): number | null {
