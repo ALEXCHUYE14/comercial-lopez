@@ -20,7 +20,6 @@ import {
   Bluetooth,
   Wallet,
   ChevronDown,
-  EyeOff,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useCajaCtx } from '@/context/CajaContext'
@@ -923,23 +922,28 @@ export function Caja() {
       >
         {caja && (
           <div className="space-y-4">
-            {/* Arqueo a ciegas: a proposito NO se muestra aqui ningun total de
-                ventas/cobros/egresos ni el efectivo esperado — el cajero debe
-                declarar lo que cuenta fisicamente sin conocer de antemano la
-                cifra contra la que el sistema lo va a comparar. El desglose
-                completo (y la diferencia) recien se revela DESPUES de
-                confirmar, en el resumen del arqueo. */}
-            <div className="flex items-start gap-2.5 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
-              <EyeOff className="mt-0.5 size-4 shrink-0" />
+            <div className="flex items-start gap-2.5 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
+              <FileDown className="mt-0.5 size-4 shrink-0" />
               <span>
-                <strong>Arqueo a ciegas:</strong> cuenta el efectivo físico de la caja y declara el
-                monto exacto. El sistema comparará tu conteo con lo esperado recién después de
-                confirmar.
+                Al confirmar, se generará y descargará automáticamente un{' '}
+                <strong>reporte PDF</strong> con todas las ventas del turno.
               </span>
             </div>
+            {/* Desglose previo del turno — calculado en el cliente con los
+                totales que la caja ya trae cargados (los mismos que se ven en
+                las tarjetas KPI de esta pantalla), no requiere ida y vuelta
+                al servidor. El veredicto del arqueo (diferencia, conforme /
+                observado / crítico) lo sigue calculando SIEMPRE el servidor
+                vía el RPC cerrar_caja_arqueo, recién al confirmar — ver
+                useCaja.cerrar(). */}
             <div className="rounded-xl bg-ink-50 p-4 text-sm space-y-1.5">
-              <InfoRow k="Cajero"    v={caja.cajero_nombre ?? '-'} />
-              <InfoRow k="Apertura"  v={fechaHora(caja.abierta_en)} />
+              <InfoRow k="Fondo inicial"   v={money(toNum(caja.monto_inicial))} />
+              <InfoRow k="Ventas efectivo" v={money(toNum(caja.total_efectivo))} />
+              <div className="border-t border-ink-200 pt-1.5">
+                <InfoRow k="Efectivo esperado" v={money(esperadoEfectivoDe(caja))} bold />
+              </div>
+              <InfoRow k="Ventas Yape"  v={money(toNum(caja.total_yape))} />
+              <InfoRow k="Ventas Fiado" v={money(toNum(caja.total_fiado))} />
             </div>
             <label className="block">
               <span className="label mb-1.5 block">¿Cuánto efectivo hay en caja? (S/)</span>
@@ -954,13 +958,6 @@ export function Caja() {
                 autoFocus
               />
             </label>
-            <div className="flex items-start gap-2.5 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
-              <FileDown className="mt-0.5 size-4 shrink-0" />
-              <span>
-                Al confirmar, se generará y descargará automáticamente un{' '}
-                <strong>reporte PDF</strong> con todas las ventas del turno.
-              </span>
-            </div>
           </div>
         )}
       </Sheet>
