@@ -10,7 +10,7 @@ import { cx } from '@/utils/format'
 import { beepExito, desbloquearAudioScanner } from '@/utils/beep'
 import type { Categoria, Producto, TipoVenta } from '@/types/database'
 
-const UNIDADES_GRANEL = ['kg', 'g', 'litro', 'ml']
+const UNIDADES_GRANEL = ['kg', 'g', 'litro', 'ml', 'arroba']
 
 interface Props {
   open: boolean
