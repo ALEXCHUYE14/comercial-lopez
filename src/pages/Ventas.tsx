@@ -28,6 +28,7 @@ import {
   cx,
 } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
+import { etiquetaModalidad } from '@/utils/presentaciones'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
@@ -687,7 +688,7 @@ function TicketReprint({
     const lineas: TicketLinea[] = detalle.map((d) => ({
       cantidadTexto: Number.isInteger(d.cantidad) ? `${d.cantidad}x` : cantidad(d.cantidad),
       nombre: d.producto_nombre,
-      tag: d.modalidad === 'caja' ? 'Caja' : d.modalidad === 'saco' ? 'Saco' : undefined,
+      tag: etiquetaModalidad(d.modalidad),
       montoTexto: money(Number(d.subtotal)),
     }))
     const datos: TicketDatos = {
@@ -811,6 +812,13 @@ function TicketReprint({
               <div key={d.id} className="flex justify-between gap-2">
                 <span className="min-w-0 truncate text-ink-700">
                   {d.cantidad}x {d.producto_nombre}
+                  {/* Equivalente real descontado del stock (en unidad base) cuando la
+                      venta fue por caja, saco, arroba, docena, etc. */}
+                  {etiquetaModalidad(d.modalidad) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad) && (
+                    <span className="ml-1 text-xs text-ink-400">
+                      · {etiquetaModalidad(d.modalidad)} (descuenta {cantidad(Number(d.unidades))} del stock)
+                    </span>
+                  )}
                 </span>
                 <span className="tabular shrink-0 text-ink-900">{money(Number(d.subtotal))}</span>
               </div>

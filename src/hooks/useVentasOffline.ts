@@ -8,12 +8,13 @@ import {
   pareceErrorDeRed,
   type VentaOffline,
 } from '@/utils/offlineDB'
+import { precioPresentacion } from '@/utils/presentaciones'
 import type { ItemCarrito, Venta } from '@/types/database'
 
 function precioItem(item: ItemCarrito): number {
   if (item.modalidad === 'caja') return item.producto.precio_venta_caja ?? item.producto.precio_venta
   if (item.modalidad === 'saco') return item.producto.precio_venta_saco ?? item.producto.precio_venta
-  return item.producto.precio_venta
+  return precioPresentacion(item.producto, item.modalidad)
 }
 
 /**

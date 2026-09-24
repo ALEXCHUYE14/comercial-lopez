@@ -37,8 +37,27 @@ export type Categoria = {
   creado_en: string
 }
 
-export type ModalidadVenta = 'unidad' | 'caja' | 'saco'
+// 'caja' y 'saco' usan las columnas propias del producto; el resto son claves
+// de presentaciones adicionales (ver ClavePresentacion / utils/presentaciones.ts).
+// `(string & {})` mantiene el autocompletado de los literales y admite las claves.
+export type ClavePresentacion =
+  | 'arroba'
+  | 'medio_kilo'
+  | 'cuarto_kilo'
+  | 'docena'
+  | 'cuarto_docena'
+export type ModalidadVenta = 'unidad' | 'caja' | 'saco' | ClavePresentacion | (string & {})
 export type TipoVenta = 'unidad' | 'granel'
+
+/** Presentación de venta adicional de un producto (guardada en `productos.presentaciones`).
+ * `factor` = cuánto de la unidad base del stock consume vender 1 de esta
+ * presentación (ej. 11.5 si la base es kg y la presentación es 1 arroba). */
+export type Presentacion = {
+  clave: ClavePresentacion
+  nombre: string
+  factor: number
+  precio: number
+}
 
 export type Producto = {
   id: string
@@ -60,6 +79,9 @@ export type Producto = {
   tiene_saco: boolean
   kg_por_saco: number | null
   precio_venta_saco: number | null
+  /** Opcional: ausente en productos anteriores a esta función o si la
+   * migración aún no se aplicó; equivale a "sin presentaciones adicionales". */
+  presentaciones?: Presentacion[] | null
   creado_en: string
   actualizado_en: string
   categorias?: Categoria | null

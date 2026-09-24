@@ -215,6 +215,20 @@ do $$ begin
     check (tiene_saco = false or tipo_venta = 'granel');
 exception when duplicate_object then null; end $$;
 
+-- Presentaciones de venta adicionales de un mismo producto (arroba, medio
+-- kilo, cuarto de kilo, docena, cuarto de docena). Cada elemento del arreglo:
+--   { "clave": "arroba", "nombre": "Arroba", "factor": 11.5, "precio": 20.00 }
+-- "factor" = cuanto de la UNIDAD BASE del stock (columna "unidad") consume
+-- vender 1 de esa presentacion (ej. 11.5 kg). El stock SIEMPRE se lleva en la
+-- unidad base; ver registrar_venta. Los productos existentes quedan con '[]'
+-- y siguen vendiendose exactamente igual (unidad / caja / saco).
+alter table public.productos add column if not exists presentaciones jsonb not null default '[]'::jsonb;
+
+do $$ begin
+  alter table public.productos add constraint productos_presentaciones_es_arreglo
+    check (jsonb_typeof(presentaciones) = 'array');
+exception when duplicate_object then null; end $$;
+
 create index if not exists idx_productos_sku       on public.productos (sku);
 create index if not exists idx_productos_categoria on public.productos (categoria_id);
 create index if not exists idx_productos_stock_bajo on public.productos (stock_actual)
@@ -631,6 +645,47 @@ create policy product_images_delete on storage.objects for delete
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
+-- AUXILIAR: resolver una presentacion adicional de un producto
+-- ----------------------------------------------------------------------------
+-- Resuelve una presentacion adicional (arroba, docena, ...) de un producto:
+-- devuelve cuanto de la unidad base consume y a que precio se vende. Falla con
+-- un mensaje claro si la presentacion no existe o esta mal configurada, en
+-- vez de descontar/cobrar un valor incorrecto (factor <= 0 o precio negativo).
+create or replace function public.presentacion_producto(
+  p_presentaciones jsonb,
+  p_clave          text,
+  p_producto       text
+)
+returns table (factor numeric, precio numeric, nombre text)
+language plpgsql
+stable
+as $$
+declare
+  v_pres jsonb;
+begin
+  select e.item into v_pres
+    from jsonb_array_elements(coalesce(p_presentaciones, '[]'::jsonb)) as e(item)
+    where e.item->>'clave' = p_clave
+    limit 1;
+
+  if v_pres is null then
+    raise exception 'La presentacion "%" no esta disponible para "%".', p_clave, p_producto;
+  end if;
+
+  factor := (v_pres->>'factor')::numeric;
+  precio := (v_pres->>'precio')::numeric;
+  nombre := coalesce(v_pres->>'nombre', p_clave);
+
+  if factor is null or factor <= 0 or precio is null or precio < 0 then
+    raise exception 'La presentacion "%" de "%" esta mal configurada (equivalencia o precio invalidos).',
+      nombre, p_producto;
+  end if;
+
+  return next;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
 -- RPC 1: REGISTRAR VENTA (transaccional: stock + kardex + caja)
 -- ----------------------------------------------------------------------------
 -- Firma vieja (antes de agregar p_idempotency_key): "create or replace" NO
@@ -674,6 +729,11 @@ declare
   v_venta       public.ventas%rowtype;
   v_nombre      text;
   v_cli_nombre  text;
+  -- Presentaciones adicionales (arroba, docena, ...): ver presentacion_producto.
+  v_factor      numeric;
+  v_nom_pres    text;
+  v_motivo      text;
+  v_stock_final double precision;
 begin
   if jsonb_array_length(p_items) = 0 then
     raise exception 'El carrito esta vacio.';
@@ -731,6 +791,15 @@ begin
                     when 'saco' then coalesce(v_producto.precio_venta_saco, v_producto.precio_venta)
                     else v_producto.precio_venta
                   end;
+
+    -- Presentacion adicional (arroba, medio kilo, docena, ...): el consumo de
+    -- stock (en unidad base) y el precio salen de la configuracion del
+    -- producto, nunca del cliente.
+    if v_modalidad not in ('unidad', 'caja', 'saco') then
+      select f.factor, f.precio into v_factor, v_precio
+        from public.presentacion_producto(v_producto.presentaciones, v_modalidad, v_producto.nombre) f;
+      v_unidades := v_cantidad * v_factor;
+    end if;
 
     if v_producto.stock_actual < v_unidades then
       raise exception 'Stock insuficiente para "%": disponible % %, solicitado %',
@@ -792,6 +861,16 @@ begin
                      when 'saco' then coalesce(v_producto.precio_venta_saco, v_producto.precio_venta)
                      else v_producto.precio_venta
                    end;
+    v_motivo    := 'Venta #' || v_venta.numero;
+    if v_modalidad not in ('unidad', 'caja', 'saco') then
+      select f.factor, f.precio, f.nombre into v_factor, v_precio, v_nom_pres
+        from public.presentacion_producto(v_producto.presentaciones, v_modalidad, v_producto.nombre) f;
+      v_unidades := v_cantidad * v_factor;
+      -- El kardex deja constancia de la presentacion vendida y de su
+      -- equivalente real descontado en la unidad base.
+      v_motivo := v_motivo || ' - ' || trim_scale(round(v_cantidad, 3))::text || ' x ' || v_nom_pres
+                  || ' (= ' || trim_scale(round(v_unidades, 3))::text || ' ' || v_producto.unidad || ')';
+    end if;
     v_sub       := round(v_precio * v_cantidad, 2);
 
     insert into public.detalle_ventas (
@@ -803,7 +882,18 @@ begin
 
     update public.productos
       set stock_actual = stock_actual - v_unidades
-      where id = v_producto.id;
+      where id = v_producto.id
+      returning stock_actual into v_stock_final;
+
+    -- El chequeo de stock del paso 1 evalua cada linea por separado; si el
+    -- mismo producto viene en dos lineas (ej. 1 saco + 2 kg sueltos) la suma
+    -- podria superar el stock. Si pasa, se aborta TODA la venta (esta funcion
+    -- es una sola transaccion: no queda venta, detalle, stock ni kardex a
+    -- medias). La tolerancia absorbe el ruido de coma flotante.
+    if v_stock_final < -0.000001 then
+      raise exception 'Stock insuficiente para "%": la venta combinada supera el stock disponible.',
+        v_producto.nombre;
+    end if;
 
     insert into public.movimientos_inventario (
       producto_id, producto_nombre, tipo, cantidad,
@@ -811,7 +901,7 @@ begin
     ) values (
       v_producto.id, v_producto.nombre, 'venta', -v_unidades,
       v_producto.stock_actual, v_producto.stock_actual - v_unidades,
-      'Venta #' || v_venta.numero, auth.uid(), v_nombre
+      v_motivo, auth.uid(), v_nombre
     );
   end loop;
 

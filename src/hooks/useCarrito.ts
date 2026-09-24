@@ -1,4 +1,5 @@
 import { useMemo, useState, useCallback } from 'react'
+import { factorModalidad, precioPresentacion, unidadesDe } from '@/utils/presentaciones'
 import type { ItemCarrito, ModalidadVenta, Producto } from '@/types/database'
 
 const TASA_IGV = 0.18
@@ -14,17 +15,31 @@ function precioItem(item: ItemCarrito): number {
   if (item.modalidad === 'saco') {
     return item.producto.precio_venta_saco ?? item.producto.precio_venta
   }
-  return item.producto.precio_venta
+  return precioPresentacion(item.producto, item.modalidad)
 }
 
-function maxCantidad(producto: Producto, modalidad: ModalidadVenta): number {
+// `reservado` = unidades base que ya ocupan OTRAS líneas del mismo producto en
+// el carrito (ej. 1 saco de 50 kg + kg sueltos): el tope de esta línea sale del
+// stock que queda libre, no del stock total, para no vender dos veces lo mismo.
+function maxCantidad(producto: Producto, modalidad: ModalidadVenta, reservado = 0): number {
+  const libre = Math.max(producto.stock_actual - reservado, 0)
   if (modalidad === 'caja') {
-    return Math.floor(producto.stock_actual / (producto.unidades_por_caja ?? 1))
+    return Math.floor(libre / (producto.unidades_por_caja ?? 1))
   }
   if (modalidad === 'saco') {
-    return Math.floor(producto.stock_actual / (producto.kg_por_saco ?? 1))
+    return Math.floor(libre / (producto.kg_por_saco ?? 1))
   }
-  return producto.stock_actual
+  if (modalidad !== 'unidad') {
+    // Presentación adicional (arroba, docena, ...): cantidad entera de presentaciones.
+    return Math.floor(libre / factorModalidad(producto, modalidad) + 1e-9)
+  }
+  return libre
+}
+
+function reservadoPorOtras(items: ItemCarrito[], productoId: string, modalidad: ModalidadVenta): number {
+  return items
+    .filter((i) => i.producto.id === productoId && i.modalidad !== modalidad)
+    .reduce((s, i) => s + unidadesDe(i), 0)
 }
 
 export function useCarrito() {
@@ -38,7 +53,7 @@ export function useCarrito() {
         const idx = prev.findIndex(
           (i) => itemKey(i.producto.id, i.modalidad) === key,
         )
-        const max = maxCantidad(producto, modalidad)
+        const max = maxCantidad(producto, modalidad, reservadoPorOtras(prev, producto.id, modalidad))
         if (max <= 0) return prev
         if (idx >= 0) {
           const copia = [...prev]
@@ -65,7 +80,10 @@ export function useCarrito() {
                   ...i,
                   cantidad: Math.max(
                     0,
-                    Math.min(cantidad, maxCantidad(i.producto, modalidad)),
+                    Math.min(
+                      cantidad,
+                      maxCantidad(i.producto, modalidad, reservadoPorOtras(prev, productoId, modalidad)),
+                    ),
                   ),
                 }
               : i,

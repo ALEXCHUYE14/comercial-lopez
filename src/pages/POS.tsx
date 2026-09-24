@@ -13,6 +13,7 @@ import {
   PackagePlus,
   WifiOff,
   RefreshCw,
+  ChevronDown,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
 import { useCarrito } from '@/hooks/useCarrito'
@@ -31,6 +32,13 @@ import { PaymentModal } from '@/components/pos/PaymentModal'
 import { Receipt } from '@/components/pos/Receipt'
 import { ProductForm } from '@/components/inventory/ProductForm'
 import { money, cx, cantidad, etiquetaUnidad } from '@/utils/format'
+import {
+  etiquetaModalidad,
+  factorModalidad,
+  opcionesVenta,
+  precioPresentacion,
+  presentacionesDe,
+} from '@/utils/presentaciones'
 import { BRAND } from '@/config/brand'
 import { beepExito, beepError, desbloquearAudioScanner } from '@/utils/beep'
 import { pareceErrorDeRed, type VentaOffline } from '@/utils/offlineDB'
@@ -80,6 +88,9 @@ export function POS() {
   const [abriendoCaja, setAbriendoCaja] = useState(false)
   const [granelSel, setGranelSel] = useState<Producto | null>(null)
   const [cantGranel, setCantGranel] = useState('1')
+  // Producto con presentaciones múltiples (arroba, docena, saco, caja...) cuyo
+  // selector de presentación está abierto.
+  const [presSel, setPresSel] = useState<Producto | null>(null)
   // Alta rapida: cuando un escaneo (camara o lector fisico) no encuentra
   // coincidencia y quien esta en caja es administrador, se ofrece crear el
   // producto al vuelo en vez de solo mostrar el error — sin esto, un
@@ -155,6 +166,22 @@ export function POS() {
     toast.exito(`+ ${cantidad(c)} ${granelSel.unidad} de ${granelSel.nombre}`)
     setGranelSel(null)
   }
+
+  // --- Productos con presentaciones múltiples: el cajero elige cómo vender ---
+  function elegirPresentacion(p: Producto, modalidad: ModalidadVenta) {
+    setPresSel(null)
+    // Venta suelta de un producto a granel: pide la cantidad exacta (kg, etc.).
+    if (modalidad === 'unidad' && p.tipo_venta === 'granel') {
+      abrirGranel(p)
+      return
+    }
+    carrito.agregar(p, modalidad)
+    toast.exito(`+ 1 ${(etiquetaModalidad(modalidad) ?? 'unidad').toLowerCase()} de ${p.nombre}`)
+  }
+
+  // Versión viva del producto abierto en el selector (el stock cambia por
+  // tiempo real mientras el selector está abierto).
+  const presActual = presSel ? (productos.find((p) => p.id === presSel.id) ?? presSel) : null
 
   const filtrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
@@ -581,6 +608,7 @@ export function POS() {
                 producto={p}
                 onAgregar={(modalidad) => carrito.agregar(p, modalidad)}
                 onGranel={() => abrirGranel(p)}
+                onPresentaciones={() => setPresSel(p)}
               />
             ))}
           </div>
@@ -638,6 +666,48 @@ export function POS() {
         <p className="mt-3 text-center text-xs text-ink-400">
           Apunta al codigo de barras o QR del producto.
         </p>
+      </Sheet>
+
+      {/* Selector de presentación: precio y disponibilidad de cada forma de vender */}
+      <Sheet
+        open={!!presActual}
+        onClose={() => setPresSel(null)}
+        title={presActual ? presActual.nombre : 'Presentación'}
+        maxWidth="max-w-sm"
+      >
+        {presActual && (
+          <div className="space-y-3">
+            <p className="text-sm text-ink-500">
+              Stock total:{' '}
+              <b className="text-ink-800">
+                {cantidad(presActual.stock_actual)} {etiquetaUnidad(presActual)}
+              </b>
+              . Cada presentación descuenta su equivalente de este stock.
+            </p>
+            <ul className="space-y-2">
+              {opcionesVenta(presActual).map((o) => (
+                <li key={o.modalidad}>
+                  <button
+                    onClick={() => elegirPresentacion(presActual, o.modalidad)}
+                    disabled={o.disponible <= 0}
+                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-ink-100 px-3.5 py-3 text-left transition hover:border-ink-300 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold text-ink-800">{o.etiqueta}</span>
+                      <span className="block text-xs text-ink-400">
+                        {o.detalle ? `${o.detalle} · ` : ''}
+                        {o.disponible > 0 ? `disp. ${cantidad(o.disponible)}` : 'sin stock'}
+                      </span>
+                    </span>
+                    <span className="tabular shrink-0 font-display text-base font-bold text-ink-900">
+                      {money(o.precio)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Sheet>
 
       {/* Cantidad exacta para productos a granel (kg, litros, etc.) */}
@@ -760,10 +830,12 @@ function ProductoCard({
   producto,
   onAgregar,
   onGranel,
+  onPresentaciones,
 }: {
   producto: Producto
   onAgregar: (modalidad: ModalidadVenta) => void
   onGranel: () => void
+  onPresentaciones: () => void
 }) {
   const agotado = producto.stock_actual <= 0
   const bajo = producto.stock_actual > 0 && producto.stock_actual <= producto.stock_minimo
@@ -820,6 +892,32 @@ function ProductoCard({
       </div>
     </div>
   )
+
+  // Producto con presentaciones adicionales (arroba, docena, ...): un solo
+  // botón abre el selector con todas las formas de vender y sus precios.
+  if (presentacionesDe(producto).length > 0) {
+    return (
+      <div
+        className={cx(
+          'group flex flex-col overflow-hidden rounded-xl border border-ink-100 bg-white text-left transition',
+          agotado && 'opacity-50',
+        )}
+      >
+        {imgSection}
+        {infoSection}
+        <div className="border-t border-ink-100 p-1.5">
+          <button
+            onClick={onPresentaciones}
+            disabled={agotado}
+            className="flex w-full items-center justify-center gap-1 rounded-lg bg-accent-100 py-1.5 text-xs font-semibold text-accent-700 transition hover:bg-accent-200 disabled:opacity-40"
+          >
+            Presentaciones
+            <ChevronDown className="size-3.5" />
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   if (esGranel && producto.tiene_saco) {
     return (
@@ -952,7 +1050,7 @@ function CartPanel({ carrito, onCobrar }: { carrito: CarritoCtx; onCobrar: () =>
 function precioItem(item: ItemCarrito): number {
   if (item.modalidad === 'caja') return item.producto.precio_venta_caja ?? item.producto.precio_venta
   if (item.modalidad === 'saco') return item.producto.precio_venta_saco ?? item.producto.precio_venta
-  return item.producto.precio_venta
+  return precioPresentacion(item.producto, item.modalidad)
 }
 
 function maxDisp(item: ItemCarrito): number {
@@ -961,6 +1059,9 @@ function maxDisp(item: ItemCarrito): number {
   }
   if (item.modalidad === 'saco') {
     return Math.floor(item.producto.stock_actual / (item.producto.kg_por_saco ?? 1))
+  }
+  if (item.modalidad !== 'unidad') {
+    return Math.floor(item.producto.stock_actual / factorModalidad(item.producto, item.modalidad) + 1e-9)
   }
   return item.producto.stock_actual
 }
@@ -982,6 +1083,12 @@ function CartItems({ carrito }: { carrito: CarritoCtx }) {
         const max = maxDisp(i)
         const esCaja = i.modalidad === 'caja'
         const esSaco = i.modalidad === 'saco'
+        // Presentación adicional (arroba, docena, ...): nombre para la etiqueta
+        // y equivalencia real que se descuenta del stock por cada una.
+        const nombrePres = !esCaja && !esSaco ? etiquetaModalidad(i.modalidad) : undefined
+        const equivalePres = nombrePres
+          ? `${cantidad(factorModalidad(i.producto, i.modalidad))} ${i.producto.tipo_venta === 'granel' ? i.producto.unidad : 'u.'}`
+          : ''
         // Solo se pide cantidad fraccionada (kg) cuando es granel vendido
         // "suelto" (modalidad 'unidad'); por saco es una cantidad entera.
         const esKgFraccionado = i.producto.tipo_venta === 'granel' && i.modalidad === 'unidad'
@@ -1013,12 +1120,13 @@ function CartItems({ carrito }: { carrito: CarritoCtx }) {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold text-ink-800">{i.producto.nombre}</p>
               <p className="tabular text-xs text-ink-400">
-                {(esCaja || esSaco) && (
+                {(esCaja || esSaco || nombrePres) && (
                   <span className="mr-1 rounded bg-accent-100 px-1 py-0.5 text-[0.6rem] font-bold uppercase text-accent-700">
-                    {esCaja ? 'Caja' : 'Saco'}
+                    {esCaja ? 'Caja' : esSaco ? 'Saco' : nombrePres}
                   </span>
                 )}
-                {money(precio)} c/{esCaja ? 'caja' : esSaco ? 'saco' : esKgFraccionado ? i.producto.unidad : 'u'}
+                {money(precio)} c/{esCaja ? 'caja' : esSaco ? 'saco' : nombrePres ? nombrePres.toLowerCase() : esKgFraccionado ? i.producto.unidad : 'u'}
+                {nombrePres && <span className="ml-1 text-ink-300">({equivalePres})</span>}
               </p>
             </div>
             {esKgFraccionado ? (

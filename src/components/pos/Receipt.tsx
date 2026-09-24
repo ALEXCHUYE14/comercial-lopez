@@ -4,6 +4,7 @@ import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cantidad } from '@/utils/format'
+import { etiquetaModalidad, precioPresentacion } from '@/utils/presentaciones'
 import { useNegocio, textoDocumento } from '@/config/negocio'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
@@ -20,7 +21,7 @@ const ETIQUETA: Record<string, string> = {
 function precioItem(item: ItemCarrito): number {
   if (item.modalidad === 'caja') return item.producto.precio_venta_caja ?? item.producto.precio_venta
   if (item.modalidad === 'saco') return item.producto.precio_venta_saco ?? item.producto.precio_venta
-  return item.producto.precio_venta
+  return precioPresentacion(item.producto, item.modalidad)
 }
 
 function etiquetaCantidad(item: ItemCarrito): string {
@@ -49,7 +50,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
     const lineas: TicketLinea[] = items.map((i) => ({
       cantidadTexto: etiquetaCantidad(i),
       nombre: i.producto.nombre,
-      tag: i.modalidad === 'caja' ? 'Caja' : i.modalidad === 'saco' ? 'Saco' : undefined,
+      tag: etiquetaModalidad(i.modalidad),
       montoTexto: money(precioItem(i) * i.cantidad),
     }))
     const datos: TicketDatos = {
@@ -171,9 +172,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
             <div key={`${i.producto.id}::${i.modalidad}`} className="flex justify-between gap-2">
               <span className="min-w-0 break-words font-semibold text-ink-800">
                 {etiquetaCantidad(i)} {i.producto.nombre}
-                {(i.modalidad === 'caja' || i.modalidad === 'saco') && (
+                {etiquetaModalidad(i.modalidad) && (
                   <span className="ml-1 rounded bg-accent-100 px-1 py-0.5 text-[0.55rem] font-bold uppercase text-accent-700">
-                    {i.modalidad === 'caja' ? 'Caja' : 'Saco'}
+                    {etiquetaModalidad(i.modalidad)}
                   </span>
                 )}
               </span>

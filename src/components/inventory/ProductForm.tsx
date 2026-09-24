@@ -6,11 +6,39 @@ import { useToast } from '@/components/ui/Toast'
 import { CameraScanner } from '@/components/pos/CameraScanner'
 import { useProductoImagen } from '@/hooks/useProductoImagen'
 import { supabase } from '@/lib/supabase'
-import { cx } from '@/utils/format'
+import { cx, cantidad } from '@/utils/format'
 import { beepExito, desbloquearAudioScanner } from '@/utils/beep'
-import type { Categoria, Producto, TipoVenta } from '@/types/database'
+import {
+  CATALOGO_PRESENTACIONES,
+  CLAVES_POR_TIPO,
+  factorSugerido,
+  presentacionesDe,
+} from '@/utils/presentaciones'
+import type { Categoria, ClavePresentacion, Presentacion, Producto, TipoVenta } from '@/types/database'
 
 const UNIDADES_GRANEL = ['kg', 'g', 'litro', 'ml', 'arroba']
+
+// Estado del formulario para las presentaciones adicionales (arroba, medio
+// kilo, docena, ...): los campos se guardan como texto (como el resto del form)
+// y se validan/convierten a número recién al guardar.
+type EstadoPres = { on: boolean; factor: string; precio: string }
+type EstadoPresentaciones = Record<ClavePresentacion, EstadoPres>
+
+const presInicial = (): EstadoPresentaciones => ({
+  arroba: { on: false, factor: '', precio: '' },
+  medio_kilo: { on: false, factor: '', precio: '' },
+  cuarto_kilo: { on: false, factor: '', precio: '' },
+  docena: { on: false, factor: '', precio: '' },
+  cuarto_docena: { on: false, factor: '', precio: '' },
+})
+
+function presDesdeProducto(p: Producto): EstadoPresentaciones {
+  const estado = presInicial()
+  for (const x of presentacionesDe(p)) {
+    estado[x.clave] = { on: true, factor: String(x.factor), precio: String(x.precio) }
+  }
+  return estado
+}
 
 interface Props {
   open: boolean
@@ -57,6 +85,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
   const [tieneCaja, setTieneCaja] = useState(false)
   const [tieneSaco, setTieneSaco] = useState(false)
   const [tipoVenta, setTipoVenta] = useState<TipoVenta>('unidad')
+  const [pres, setPres] = useState<EstadoPresentaciones>(presInicial)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [arrastrando, setArrastrando] = useState(false)
@@ -83,11 +112,13 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       setTieneCaja(producto.tiene_caja)
       setTieneSaco(producto.tiene_saco)
       setTipoVenta(producto.tipo_venta ?? 'unidad')
+      setPres(presDesdeProducto(producto))
     } else {
       setF(skuInicial ? { ...vacio, sku: skuInicial } : vacio)
       setTieneCaja(false)
       setTieneSaco(false)
       setTipoVenta('unidad')
+      setPres(presInicial())
       // Si llega un SKU precargado (viene de un escaneo sin coincidencia),
       // el usuario ya no necesita tocar ese campo: pasa el foco directo al
       // nombre, igual que hace onSkuDetectado tras escanear dentro del form.
@@ -114,6 +145,25 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       setTieneSaco(false)
       if (UNIDADES_GRANEL.includes(f.unidad)) set('unidad', 'unidad')
     }
+  }
+
+  // Al activar una presentación se sugiere su equivalencia según la unidad base
+  // (ej. arroba = 11.5 si la base es kg); si no hay sugerencia queda vacía para
+  // que se escriba a mano.
+  function alternarPres(clave: ClavePresentacion) {
+    setPres((prev) => {
+      const actual = prev[clave]
+      if (actual.on) return { ...prev, [clave]: { ...actual, on: false } }
+      const sugerido = factorSugerido(clave, f.unidad)
+      return {
+        ...prev,
+        [clave]: { ...actual, on: true, factor: actual.factor || (sugerido !== null ? String(sugerido) : '') },
+      }
+    })
+  }
+
+  function setPresCampo(clave: ClavePresentacion, campo: 'factor' | 'precio', valor: string) {
+    setPres((prev) => ({ ...prev, [clave]: { ...prev[clave], [campo]: valor } }))
   }
 
   function onSkuDetectado(codigo: string) {
@@ -152,6 +202,54 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       toast.error('SKU y nombre son obligatorios.')
       return
     }
+
+    // Equivalencias (unidades por caja, kg por saco, etc.) y precios de cada
+    // presentación: solo valores finitos y mayores a 0. Un 0 o un negativo aquí
+    // se traduciría en ventas que descuentan mal el stock o cobran S/ 0.
+    if (!esGranel && tieneCaja) {
+      if (!((parseInt(f.unidades_por_caja) || 0) >= 1)) {
+        toast.error('Indica cuántas unidades trae la caja (mínimo 1).')
+        return
+      }
+      if (!((parseFloat(f.precio_venta_caja) || 0) > 0)) {
+        toast.error('Indica el precio de la caja (mayor a 0).')
+        return
+      }
+    }
+    if (esGranel && tieneSaco) {
+      if (!((parseFloat(f.kg_por_saco) || 0) > 0)) {
+        toast.error(`Indica cuántos ${f.unidad} trae el saco (mayor a 0).`)
+        return
+      }
+      if (!((parseFloat(f.precio_venta_saco) || 0) > 0)) {
+        toast.error('Indica el precio del saco (mayor a 0).')
+        return
+      }
+    }
+    const presentaciones: Presentacion[] = []
+    for (const clave of CLAVES_POR_TIPO[tipoVenta]) {
+      const e = pres[clave]
+      if (!e.on) continue
+      const nombre = CATALOGO_PRESENTACIONES[clave].nombre
+      // Se redondea ANTES de validar: un valor diminuto (ej. 1e-9) no debe
+      // pasar como "mayor a 0" y luego guardarse como 0.
+      const factor = Math.round(parseFloat(e.factor) * 1e6) / 1e6
+      const precio = Math.round(parseFloat(e.precio) * 100) / 100
+      if (!Number.isFinite(factor) || factor <= 0) {
+        toast.error(`${nombre}: indica cuántos ${esGranel ? f.unidad : 'unidades'} contiene (mayor a 0).`)
+        return
+      }
+      if (!Number.isFinite(precio) || precio <= 0) {
+        toast.error(`${nombre}: indica el precio (mayor a 0).`)
+        return
+      }
+      presentaciones.push({ clave, nombre, factor, precio })
+    }
+    // Solo se envía la columna cuando hay presentaciones o hay que limpiar las
+    // que tenía: un producto simple se guarda exactamente igual que antes.
+    const teniaPresentaciones =
+      !!producto && Array.isArray(producto.presentaciones) && producto.presentaciones.length > 0
+
     setGuardando(true)
     const payload = {
       sku: f.sku.trim(),
@@ -170,6 +268,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       tiene_saco: esGranel && tieneSaco,
       kg_por_saco: esGranel && tieneSaco ? (parseFloat(f.kg_por_saco) || null) : null,
       precio_venta_saco: esGranel && tieneSaco ? (parseFloat(f.precio_venta_saco) || null) : null,
+      ...(presentaciones.length > 0 || teniaPresentaciones ? { presentaciones } : {}),
     }
 
     // Guarda primero los datos del producto. La foto se sube después y por
@@ -532,6 +631,77 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
         </div>
         )}
 
+        {/* Otras presentaciones de venta: arroba / fracciones de kilo (granel),
+            docena / cuarto de docena (por unidad). El stock se lleva siempre en
+            la unidad base elegida arriba; cada presentación solo define cuánto
+            de ese stock consume y a qué precio se vende. */}
+        <div className="rounded-xl border border-ink-100 p-3">
+          <p className="text-sm font-semibold text-ink-800">Otras presentaciones de venta</p>
+          <p className="text-xs text-ink-400">
+            {esGranel
+              ? `Vende también por arroba o fracciones de kilo. El stock siempre se lleva en ${f.unidad}.`
+              : 'Vende también por docena o cuarto de docena. El stock siempre se lleva en la unidad base.'}
+          </p>
+          <div className="mt-3 space-y-2.5">
+            {CLAVES_POR_TIPO[tipoVenta].map((clave) => {
+              const e = pres[clave]
+              const nombre = CATALOGO_PRESENTACIONES[clave].nombre.toLowerCase()
+              const etqBase = esGranel ? f.unidad : 'unidades'
+              const factorNum = parseFloat(e.factor)
+              const factorOk = Number.isFinite(factorNum) && factorNum > 0
+              // Precio de referencia = precio base x equivalencia (solo como pista).
+              const sugerido = factorOk
+                ? Math.round((parseFloat(f.precio_venta) || 0) * factorNum * 100) / 100
+                : null
+              return (
+                <div key={clave} className="rounded-lg bg-ink-50 p-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium capitalize text-ink-700">{nombre}</span>
+                    <Interruptor
+                      activo={e.on}
+                      etiqueta={`Vender por ${nombre}`}
+                      onClick={() => alternarPres(clave)}
+                    />
+                  </div>
+                  {e.on && (
+                    <>
+                      <div className="mt-2.5 grid grid-cols-2 gap-3">
+                        <Campo label={`${etqBase} por ${nombre}`}>
+                          <input
+                            type="number"
+                            min={0}
+                            step={0.001}
+                            className="input tabular"
+                            value={e.factor}
+                            onChange={(ev) => setPresCampo(clave, 'factor', ev.target.value)}
+                            placeholder="0"
+                          />
+                        </Campo>
+                        <Campo label={`Precio ${nombre} (S/)`}>
+                          <input
+                            type="number"
+                            min={0}
+                            step={0.01}
+                            className="input tabular"
+                            value={e.precio}
+                            onChange={(ev) => setPresCampo(clave, 'precio', ev.target.value)}
+                            placeholder={sugerido ? sugerido.toFixed(2) : '0.00'}
+                          />
+                        </Campo>
+                      </div>
+                      {factorOk && (
+                        <p className="mt-2 text-xs text-ink-400">
+                          Vender 1 {nombre} descuenta <b className="text-ink-600">{cantidad(factorNum)} {etqBase}</b> del stock.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
         {/* Foto del producto */}
         <div>
           <span className="label mb-1.5 block">Foto del producto</span>
@@ -640,6 +810,37 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
         )}
       </div>
     </Sheet>
+  )
+}
+
+function Interruptor({
+  activo,
+  onClick,
+  etiqueta,
+}: {
+  activo: boolean
+  onClick: () => void
+  etiqueta: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={activo}
+      aria-label={etiqueta}
+      onClick={onClick}
+      className={cx(
+        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+        activo ? 'bg-accent-500' : 'bg-ink-200',
+      )}
+    >
+      <span
+        className={cx(
+          'inline-block size-5 rounded-full bg-white shadow transition-transform',
+          activo ? 'translate-x-5' : 'translate-x-0.5',
+        )}
+      />
+    </button>
   )
 }
 
