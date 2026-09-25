@@ -30,6 +30,11 @@ export const CATALOGO_PRESENTACIONES: Record<ClavePresentacion, { nombre: string
   docena: { nombre: 'Docena', tipo: 'unidad' },
   media_docena: { nombre: 'Media docena', tipo: 'unidad' },
   cuarto_docena: { nombre: 'Cuarto de docena', tipo: 'unidad' },
+  // "Media caja" no tiene un tamaño fijo (a diferencia de docena=12): depende
+  // de cuántas unidades trae LA CAJA de este producto (tiene_caja +
+  // unidades_por_caja, ya existentes). Por eso solo se ofrece cuando el
+  // producto ya vende por caja completa — ver clavesDisponibles más abajo.
+  media_caja: { nombre: 'Media caja', tipo: 'unidad' },
 }
 
 // Qué presentaciones adicionales tiene sentido ofrecer, según el tipo de venta
@@ -49,16 +54,33 @@ const CLAVES_GRANEL_POR_UNIDAD: Record<string, ClavePresentacion[]> = {
 const CLAVES_UNIDAD: ClavePresentacion[] = ['docena', 'media_docena', 'cuarto_docena']
 
 /** Presentaciones que se pueden configurar para un producto, según su tipo de
- * venta y la unidad base exacta elegida (kg, g, paquete, litro, ...). Litro/ml
- * y otras unidades sin presentaciones predefinidas devuelven una lista vacía. */
-export function clavesDisponibles(tipoVenta: TipoVenta, unidadBase: string): ClavePresentacion[] {
-  if (tipoVenta === 'unidad') return CLAVES_UNIDAD
+ * venta, la unidad base exacta elegida (kg, g, paquete, litro, ...) y si el
+ * producto ya vende por caja completa (`tieneCaja`, ver el interruptor
+ * "Venta por caja"). Litro/ml y otras unidades sin presentaciones predefinidas
+ * devuelven una lista vacía. Esta es la ÚNICA función que decide qué se
+ * ofrece: tanto el formulario (validación al guardar) como su render la usan,
+ * para que nunca queden desincronizados entre sí. */
+export function clavesDisponibles(
+  tipoVenta: TipoVenta,
+  unidadBase: string,
+  tieneCaja = false,
+): ClavePresentacion[] {
+  if (tipoVenta === 'unidad') {
+    // "Media caja" solo tiene sentido si el producto YA vende por caja
+    // completa: ahí se conoce cuántas unidades trae (unidades_por_caja), que
+    // es lo que se sugiere partir a la mitad. Sin caja configurada no hay de
+    // qué tomar "la mitad", asi que no se ofrece.
+    return tieneCaja ? [...CLAVES_UNIDAD, 'media_caja'] : CLAVES_UNIDAD
+  }
   return CLAVES_GRANEL_POR_UNIDAD[unidadBase] ?? []
 }
 
 // Equivalencia sugerida al activar una presentación, según la unidad base del
 // stock. Si la unidad base no está aquí no se sugiere nada (ej. "paquete" no
 // tiene un peso universal: el peso de un paquete lo indica cada negocio).
+// "media_caja" queda deliberadamente vacía aquí: su sugerencia depende del
+// tamaño de caja de CADA producto (unidades_por_caja), no de la unidad base —
+// se calcula aparte, en ProductForm, con ese dato a la mano.
 const FACTOR_SUGERIDO: Record<ClavePresentacion, Record<string, number>> = {
   arroba: { kg: 11.5, g: 11500 },
   medio_kilo: { kg: 0.5, g: 500 },
@@ -70,6 +92,7 @@ const FACTOR_SUGERIDO: Record<ClavePresentacion, Record<string, number>> = {
   docena: { unidad: 12, paquete: 12, caja: 12 },
   media_docena: { unidad: 6, paquete: 6, caja: 6 },
   cuarto_docena: { unidad: 3, paquete: 3, caja: 3 },
+  media_caja: {},
 }
 
 export function factorSugerido(clave: ClavePresentacion, unidadBase: string): number | null {

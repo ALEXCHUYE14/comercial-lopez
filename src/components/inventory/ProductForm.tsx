@@ -39,6 +39,7 @@ const presInicial = (): EstadoPresentaciones => ({
   docena: { on: false, factor: '', precio: '' },
   media_docena: { on: false, factor: '', precio: '' },
   cuarto_docena: { on: false, factor: '', precio: '' },
+  media_caja: { on: false, factor: '', precio: '' },
 })
 
 function presDesdeProducto(p: Producto): EstadoPresentaciones {
@@ -166,7 +167,15 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
     setPres((prev) => {
       const actual = prev[clave]
       if (actual.on) return { ...prev, [clave]: { ...actual, on: false } }
-      const sugerido = factorSugerido(clave, f.unidad)
+      // "Media caja" no tiene una equivalencia universal por unidad base (a
+      // diferencia de arroba/docena): se sugiere la mitad del tamaño de caja
+      // YA configurado para este producto (unidades_por_caja). Si ese campo
+      // todavía está vacío, no hay nada que sugerir y se deja en blanco.
+      let sugerido = factorSugerido(clave, f.unidad)
+      if (clave === 'media_caja') {
+        const upc = parseInt(f.unidades_por_caja, 10)
+        sugerido = Number.isFinite(upc) && upc > 0 ? upc / 2 : null
+      }
       return {
         ...prev,
         [clave]: { ...actual, on: true, factor: actual.factor || (sugerido !== null ? String(sugerido) : '') },
@@ -239,7 +248,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       }
     }
     const presentaciones: Presentacion[] = []
-    for (const clave of clavesDisponibles(tipoVenta, f.unidad)) {
+    for (const clave of clavesDisponibles(tipoVenta, f.unidad, tieneCaja)) {
       const e = pres[clave]
       if (!e.on) continue
       const nombre = CATALOGO_PRESENTACIONES[clave].nombre
@@ -329,7 +338,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
   // Presentaciones ofrecibles con la combinacion actual de tipo de venta +
   // unidad base exacta (ej. "paquete" habilita medio/cuarto de paquete; "kg"
   // habilita arroba y fracciones de kilo; "litro" no tiene predefinidas).
-  const clavesPres = clavesDisponibles(tipoVenta, f.unidad)
+  const clavesPres = clavesDisponibles(tipoVenta, f.unidad, tieneCaja)
 
   return (
     <Sheet
@@ -648,18 +657,19 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
         )}
 
         {/* Otras presentaciones de venta: arroba / fracciones de kilo o de
-            paquete (granel), docena / cuarto de docena (por unidad). El stock
-            se lleva siempre en la unidad base elegida arriba; cada
-            presentación solo define cuánto de ese stock consume y a qué
-            precio se vende. Se oculta por completo si la unidad base elegida
-            no tiene presentaciones predefinidas (ej. litro, ml). */}
+            paquete (granel), docena / media docena / cuarto de docena / media
+            caja (por unidad, esta última solo si "Venta por caja" está
+            activo). El stock se lleva siempre en la unidad base elegida
+            arriba; cada presentación solo define cuánto de ese stock consume
+            y a qué precio se vende. Se oculta por completo si la unidad base
+            elegida no tiene presentaciones predefinidas (ej. litro, ml). */}
         {clavesPres.length > 0 && (
         <div className="rounded-xl border border-ink-100 p-3">
           <p className="text-sm font-semibold text-ink-800">Otras presentaciones de venta</p>
           <p className="text-xs text-ink-400">
             {esGranel
               ? `Vende también fraccionado (ej. medio, cuarto u octavo). El stock siempre se lleva en ${f.unidad}.`
-              : 'Vende también por docena, media docena o cuarto de docena. El stock siempre se lleva en la unidad base.'}
+              : `Vende también por docena, media docena o cuarto de docena${tieneCaja ? ', o media caja' : ''}. El stock siempre se lleva en la unidad base.`}
           </p>
           <div className="mt-3 space-y-2.5">
             {clavesPres.map((clave) => {

@@ -51,6 +51,7 @@ export type ClavePresentacion =
   | 'docena'
   | 'media_docena'
   | 'cuarto_docena'
+  | 'media_caja'
 export type ModalidadVenta = 'unidad' | 'caja' | 'saco' | ClavePresentacion | (string & {})
 export type TipoVenta = 'unidad' | 'granel'
 
