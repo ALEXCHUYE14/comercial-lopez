@@ -669,7 +669,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
           <p className="text-xs text-ink-400">
             {esGranel
               ? `Vende también fraccionado (ej. medio, cuarto u octavo). El stock siempre se lleva en ${f.unidad}.`
-              : `Vende también por docena, media docena o cuarto de docena${tieneCaja ? ', o media caja' : ''}. El stock siempre se lleva en la unidad base.`}
+              : `Vende también por docena, media docena o cuarto de docena${f.unidad === 'paquete' ? ', medio o cuarto de paquete' : ''}${tieneCaja ? ', o media caja' : ''}. El stock siempre se lleva en la unidad base.`}
           </p>
           <div className="mt-3 space-y-2.5">
             {clavesPres.map((clave) => {

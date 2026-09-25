@@ -25,6 +25,10 @@ export const CATALOGO_PRESENTACIONES: Record<ClavePresentacion, { nombre: string
   // paquete. Cuando la unidad base YA ES "paquete" no aparece (seria
   // redundante con el precio base — ver CLAVES_GRANEL_POR_UNIDAD).
   paquete: { nombre: 'Paquete', tipo: 'granel' },
+  // "tipo: 'granel'" describe el caso más común (fraccionar por peso), pero
+  // medio/cuarto de paquete también se ofrecen con tipo_venta 'unidad' cuando
+  // la unidad base es "paquete" — ej. paquetes cerrados que a veces se venden
+  // partidos sin pesarlos — ver clavesDisponibles más abajo.
   medio_paquete: { nombre: 'Medio paquete', tipo: 'granel' },
   cuarto_paquete: { nombre: 'Cuarto de paquete', tipo: 'granel' },
   docena: { nombre: 'Docena', tipo: 'unidad' },
@@ -66,11 +70,20 @@ export function clavesDisponibles(
   tieneCaja = false,
 ): ClavePresentacion[] {
   if (tipoVenta === 'unidad') {
+    const claves = [...CLAVES_UNIDAD]
+    // "Medio paquete"/"Cuarto de paquete" tambien aplican fuera de "A granel"
+    // cuando la unidad base es exactamente "paquete" — ej. paquetes cerrados
+    // que a veces se venden partidos sin pesarlos. Mismo mecanismo que ya
+    // existe para tipo_venta='granel' + unidad=paquete (ver
+    // CLAVES_GRANEL_POR_UNIDAD), solo que aqui la venta suelta sigue siendo
+    // por piezas enteras (no admite kg fraccionados en el POS).
+    if (unidadBase === 'paquete') claves.push('medio_paquete', 'cuarto_paquete')
     // "Media caja" solo tiene sentido si el producto YA vende por caja
     // completa: ahí se conoce cuántas unidades trae (unidades_por_caja), que
     // es lo que se sugiere partir a la mitad. Sin caja configurada no hay de
     // qué tomar "la mitad", asi que no se ofrece.
-    return tieneCaja ? [...CLAVES_UNIDAD, 'media_caja'] : CLAVES_UNIDAD
+    if (tieneCaja) claves.push('media_caja')
+    return claves
   }
   return CLAVES_GRANEL_POR_UNIDAD[unidadBase] ?? []
 }
