@@ -57,9 +57,13 @@ export type TipoVenta = 'unidad' | 'granel'
 
 /** Presentación de venta adicional de un producto (guardada en `productos.presentaciones`).
  * `factor` = cuánto de la unidad base del stock consume vender 1 de esta
- * presentación (ej. 11.5 si la base es kg y la presentación es 1 arroba). */
+ * presentación (ej. 11.5 si la base es kg y la presentación es 1 arroba).
+ * `clave` acepta además slugs generados para presentaciones personalizadas
+ * (ej. "personalizada__bolsa" para una "Bolsa" definida por el negocio, ver
+ * utils/presentaciones.ts#clavePersonalizada) — `(string & {})` mantiene el
+ * autocompletado de los nombres conocidos sin cerrar el tipo a ellos. */
 export type Presentacion = {
-  clave: ClavePresentacion
+  clave: ClavePresentacion | (string & {})
   nombre: string
   factor: number
   precio: number
@@ -121,6 +125,11 @@ export type DetalleVenta = {
   sku: string | null
   cantidad: number
   modalidad: ModalidadVenta
+  /** Nombre de la presentación (ej. "Bolsa") congelado al momento de la
+   * venta — no depende de que el producto siga teniendo esa presentación
+   * configurada después. NULL para 'unidad'/'caja'/'saco' (etiqueta fija en
+   * el código) y para ventas registradas antes de esta columna. */
+  modalidad_nombre: string | null
   unidades: number
   precio_unitario: number
   subtotal: number

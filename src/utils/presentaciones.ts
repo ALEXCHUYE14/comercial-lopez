@@ -112,24 +112,72 @@ export function factorSugerido(clave: ClavePresentacion, unidadBase: string): nu
   return FACTOR_SUGERIDO[clave][unidadBase] ?? null
 }
 
-function esClave(valor: unknown): valor is ClavePresentacion {
+/** Verdadero si la clave es una de las ~15 presentaciones fijas del catálogo
+ * (arroba, docena, ...). Una presentación PERSONALIZADA (ver más abajo) es
+ * igual de válida para vender/descontar stock, pero no pasa esta prueba — se
+ * usa solo para decidir de dónde sale el nombre a mostrar (del catálogo fijo,
+ * o del que el negocio escribió) y, en ProductForm, para separar los
+ * interruptores fijos de las filas personalizadas al cargar un producto. */
+export function esClaveConocida(valor: unknown): valor is ClavePresentacion {
   return typeof valor === 'string' && valor in CATALOGO_PRESENTACIONES
 }
 
-/** Presentaciones adicionales válidas del producto (descarta datos corruptos:
- * factor <= 0, precio negativo o clave desconocida), nunca lanza. */
+// Prefijo de toda clave generada para una presentación personalizada (ver
+// clavePersonalizada). Garantiza, pase lo que pase escriba el usuario como
+// nombre, que una clave personalizada JAMÁS choque con una del catálogo fijo
+// (ninguna clave fija empieza con este prefijo).
+const PREFIJO_PERSONALIZADA = 'personalizada__'
+
+export function esClavePersonalizada(clave: string): boolean {
+  return clave.startsWith(PREFIJO_PERSONALIZADA)
+}
+
+/** Genera una clave estable (slug ascii, sin espacios/tildes) a partir de un
+ * nombre libre para una presentación personalizada — ej. "Bolsa" -> algo como
+ * "personalizada__bolsa". `existentes` son las claves YA usadas por este
+ * mismo producto (fijas activas + otras personalizadas): si hay choque, se
+ * agrega un sufijo numérico para no pisar una presentación distinta. */
+export function clavePersonalizada(nombre: string, existentes: Iterable<string>): string {
+  const slug = nombre
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // quita tildes/diacríticos
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  const base = PREFIJO_PERSONALIZADA + (slug || 'presentacion')
+  const usadas = new Set(existentes)
+  if (!usadas.has(base)) return base
+  let n = 2
+  while (usadas.has(`${base}_${n}`)) n++
+  return `${base}_${n}`
+}
+
+/** Verdadero si el valor tiene la forma mínima de una Presentacion utilizable:
+ * clave y nombre no vacíos, factor > 0, precio >= 0. A propósito NO exige que
+ * la clave esté en el catálogo fijo — admite presentaciones personalizadas
+ * (jerarquías de empaque propias del negocio, ej. "Bolsa", "Paquete Maestro"). */
+function esPresentacionValida(p: unknown): p is Presentacion {
+  if (!p || typeof p !== 'object') return false
+  const x = p as Record<string, unknown>
+  return (
+    typeof x.clave === 'string' &&
+    x.clave.length > 0 &&
+    typeof x.nombre === 'string' &&
+    x.nombre.trim().length > 0 &&
+    Number.isFinite(Number(x.factor)) &&
+    Number(x.factor) > 0 &&
+    Number.isFinite(Number(x.precio)) &&
+    Number(x.precio) >= 0
+  )
+}
+
+/** Presentaciones adicionales válidas del producto — catálogo fijo o
+ * personalizadas por igual (descarta datos corruptos: factor <= 0, precio
+ * negativo, nombre o clave vacíos), nunca lanza. */
 export function presentacionesDe(producto: Pick<Producto, 'presentaciones'>): Presentacion[] {
   const lista = producto.presentaciones
   if (!Array.isArray(lista)) return []
-  return lista.filter(
-    (p) =>
-      !!p &&
-      esClave(p.clave) &&
-      Number.isFinite(Number(p.factor)) &&
-      Number(p.factor) > 0 &&
-      Number.isFinite(Number(p.precio)) &&
-      Number(p.precio) >= 0,
-  )
+  return lista.filter(esPresentacionValida)
 }
 
 /** Cuántas unidades base del stock consume vender 1 de esta modalidad. */
@@ -149,11 +197,28 @@ export function precioPresentacion(producto: Producto, modalidad: ModalidadVenta
   return pres ? Number(pres.precio) : producto.precio_venta
 }
 
-/** Nombre corto para tickets y etiquetas; undefined para venta suelta/por unidad. */
+/** Nombre corto para tickets y etiquetas a partir SOLO del texto de la
+ * modalidad (sin acceso al producto ni a datos congelados de la venta):
+ * cubre 'caja'/'saco' y las claves del catálogo fijo. Para una presentación
+ * personalizada (que no tiene nombre fijo en el código) esto SIEMPRE devuelve
+ * undefined — se usa como último recurso cuando no hay nada mejor a mano; ver
+ * `etiquetaModalidadDe` (carrito/ticket en vivo) y `detalle_ventas.modalidad_nombre`
+ * (ventas ya archivadas) para el nombre correcto en esos casos. */
 export function etiquetaModalidad(modalidad: string): string | undefined {
   if (modalidad === 'caja') return 'Caja'
   if (modalidad === 'saco') return 'Saco'
-  return esClave(modalidad) ? CATALOGO_PRESENTACIONES[modalidad].nombre : undefined
+  return esClaveConocida(modalidad) ? CATALOGO_PRESENTACIONES[modalidad].nombre : undefined
+}
+
+/** Nombre a mostrar para una línea de venta EN VIVO (carrito, ticket recién
+ * emitido, selector del POS) — a diferencia de `etiquetaModalidad`, sí
+ * resuelve presentaciones personalizadas, leyendo el nombre que el propio
+ * producto tiene guardado para esa clave. Para una venta ya archivada usa en
+ * su lugar `detalle_ventas.modalidad_nombre` (nombre congelado al momento de
+ * la venta), no esta función — el producto pudo cambiar desde entonces. */
+export function etiquetaModalidadDe(producto: Producto, modalidad: ModalidadVenta): string | undefined {
+  const propia = presentacionesDe(producto).find((p) => p.clave === modalidad)?.nombre
+  return propia ?? etiquetaModalidad(modalidad)
 }
 
 /** Unidades base de stock que descuenta una línea (cantidad * equivalencia). */
@@ -212,7 +277,11 @@ export function opcionesVenta(producto: Producto): OpcionVenta[] {
     const factor = Number(p.factor)
     opciones.push({
       modalidad: p.clave,
-      etiqueta: CATALOGO_PRESENTACIONES[p.clave].nombre,
+      // Nombre propio de la presentación (siempre presente, sea del catálogo
+      // fijo o personalizada) — NUNCA se re-deriva del catálogo aquí, porque
+      // una clave personalizada no existe en CATALOGO_PRESENTACIONES y esa
+      // indexación lanzaría (TypeError: Cannot read properties of undefined).
+      etiqueta: p.nombre,
       detalle: `${cantidad(factor)} ${esGranel ? producto.unidad : 'u.'}`,
       precio: Number(p.precio),
       disponible: Math.floor(stock / factor + EPS),

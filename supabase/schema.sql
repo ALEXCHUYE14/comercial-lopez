@@ -364,10 +364,20 @@ alter table public.detalle_ventas add column if not exists unidades double preci
 -- disponible (coincide siempre que la venta no haya sido por caja).
 update public.detalle_ventas set unidades = cantidad where unidades = 0;
 
+-- Nombre de la presentacion (ej. "Bolsa", "Paquete Maestro", "Arroba") TAL
+-- COMO ERA al momento de la venta — se congela aqui en vez de recalcularse
+-- despues a partir de productos.presentaciones, porque esa configuracion es
+-- mutable (el negocio puede renombrar o borrar la presentacion mas tarde) y
+-- un ticket/reporte historico no debe cambiar retroactivamente. NULL para
+-- 'unidad'/'caja'/'saco', que ya tienen una etiqueta fija en el codigo.
+alter table public.detalle_ventas add column if not exists modalidad_nombre text;
+
 comment on column public.detalle_ventas.cantidad is
   'Cantidad tal como se vendio: N cajas, N kg o N unidades, segun modalidad.';
 comment on column public.detalle_ventas.unidades is
   'Unidades reales de stock descontadas (cantidad * unidades_por_caja si modalidad=caja). Se usa para anular ventas correctamente.';
+comment on column public.detalle_ventas.modalidad_nombre is
+  'Nombre de la presentacion (ej. "Bolsa") congelado al momento de la venta. NULL para unidad/caja/saco.';
 
 create index if not exists idx_detalle_venta    on public.detalle_ventas (venta_id);
 create index if not exists idx_detalle_producto on public.detalle_ventas (producto_id);
@@ -648,7 +658,12 @@ create policy product_images_delete on storage.objects for delete
 -- AUXILIAR: resolver una presentacion adicional de un producto
 -- ----------------------------------------------------------------------------
 -- Resuelve una presentacion adicional (arroba, docena, ...) de un producto:
--- devuelve cuanto de la unidad base consume y a que precio se vende. Falla con
+-- devuelve cuanto de la unidad base consume y a que precio se vende. "p_clave"
+-- puede ser cualquier texto — incluye jerarquias de empaque propias del
+-- negocio (ej. "Bolsa" = 10 unidades, "Paquete Maestro" = 50 unidades): esta
+-- funcion nunca valida la clave contra una lista fija, solo la busca por
+-- coincidencia exacta dentro del jsonb del producto (ver ProductForm, seccion
+-- "Presentaciones personalizadas"). Falla con
 -- un mensaje claro si la presentacion no existe o esta mal configurada, en
 -- vez de descontar/cobrar un valor incorrecto (factor <= 0 o precio negativo).
 create or replace function public.presentacion_producto(
@@ -862,6 +877,11 @@ begin
                      else v_producto.precio_venta
                    end;
     v_motivo    := 'Venta #' || v_venta.numero;
+    -- v_nom_pres se declara UNA VEZ fuera del loop (ver arriba): si no se
+    -- reinicia aqui, una linea 'unidad'/'caja'/'saco' que sigue a una linea
+    -- con presentacion heredaria el nombre de esa presentacion ANTERIOR y lo
+    -- guardaria mal en modalidad_nombre (bug de variable no reiniciada).
+    v_nom_pres  := null;
     if v_modalidad not in ('unidad', 'caja', 'saco') then
       select f.factor, f.precio, f.nombre into v_factor, v_precio, v_nom_pres
         from public.presentacion_producto(v_producto.presentaciones, v_modalidad, v_producto.nombre) f;
@@ -874,10 +894,10 @@ begin
     v_sub       := round(v_precio * v_cantidad, 2);
 
     insert into public.detalle_ventas (
-      venta_id, producto_id, producto_nombre, sku, cantidad, modalidad, unidades, precio_unitario, subtotal
+      venta_id, producto_id, producto_nombre, sku, cantidad, modalidad, modalidad_nombre, unidades, precio_unitario, subtotal
     ) values (
       v_venta.id, v_producto.id, v_producto.nombre, v_producto.sku,
-      v_cantidad, v_modalidad, v_unidades, v_precio, v_sub
+      v_cantidad, v_modalidad, v_nom_pres, v_unidades, v_precio, v_sub
     );
 
     update public.productos

@@ -33,7 +33,7 @@ import { Receipt } from '@/components/pos/Receipt'
 import { ProductForm } from '@/components/inventory/ProductForm'
 import { money, cx, cantidad, etiquetaUnidad } from '@/utils/format'
 import {
-  etiquetaModalidad,
+  etiquetaModalidadDe,
   factorModalidad,
   opcionesVenta,
   precioPresentacion,
@@ -176,7 +176,7 @@ export function POS() {
       return
     }
     carrito.agregar(p, modalidad)
-    toast.exito(`+ 1 ${(etiquetaModalidad(modalidad) ?? 'unidad').toLowerCase()} de ${p.nombre}`)
+    toast.exito(`+ 1 ${(etiquetaModalidadDe(p, modalidad) ?? 'unidad').toLowerCase()} de ${p.nombre}`)
   }
 
   // Versión viva del producto abierto en el selector (el stock cambia por
@@ -1085,7 +1085,7 @@ function CartItems({ carrito }: { carrito: CarritoCtx }) {
         const esSaco = i.modalidad === 'saco'
         // Presentación adicional (arroba, docena, ...): nombre para la etiqueta
         // y equivalencia real que se descuenta del stock por cada una.
-        const nombrePres = !esCaja && !esSaco ? etiquetaModalidad(i.modalidad) : undefined
+        const nombrePres = !esCaja && !esSaco ? etiquetaModalidadDe(i.producto, i.modalidad) : undefined
         const equivalePres = nombrePres
           ? `${cantidad(factorModalidad(i.producto, i.modalidad))} ${i.producto.tipo_venta === 'granel' ? i.producto.unidad : 'u.'}`
           : ''

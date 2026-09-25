@@ -627,6 +627,18 @@ export function Ventas() {
   )
 }
 
+// Nombre de la presentación para una línea de venta YA ARCHIVADA: usa el
+// nombre congelado al momento de la venta (`modalidad_nombre`, ver
+// registrar_venta en supabase/schema.sql) en vez de recalcularlo desde el
+// producto actual — este puede haber cambiado o perdido esa presentación
+// desde entonces. Para filas de antes de esta columna (modalidad_nombre
+// null) cae de vuelta al catálogo fijo, que sí cubre 'caja'/'saco'/arroba/
+// docena/etc. (una presentación personalizada de esa época simplemente no
+// tiene nombre para mostrar — no había forma de saberlo).
+function etiquetaDetalle(d: DetalleVenta): string | undefined {
+  return d.modalidad_nombre ?? etiquetaModalidad(d.modalidad)
+}
+
 /* ─── Reimpresion de ticket desde historial ───────────────────────────────── */
 function TicketReprint({
   venta,
@@ -688,7 +700,7 @@ function TicketReprint({
     const lineas: TicketLinea[] = detalle.map((d) => ({
       cantidadTexto: Number.isInteger(d.cantidad) ? `${d.cantidad}x` : cantidad(d.cantidad),
       nombre: d.producto_nombre,
-      tag: etiquetaModalidad(d.modalidad),
+      tag: etiquetaDetalle(d),
       montoTexto: money(Number(d.subtotal)),
     }))
     const datos: TicketDatos = {
@@ -814,9 +826,9 @@ function TicketReprint({
                   {d.cantidad}x {d.producto_nombre}
                   {/* Equivalente real descontado del stock (en unidad base) cuando la
                       venta fue por caja, saco, arroba, docena, etc. */}
-                  {etiquetaModalidad(d.modalidad) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad) && (
+                  {etiquetaDetalle(d) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad) && (
                     <span className="ml-1 text-xs text-ink-400">
-                      · {etiquetaModalidad(d.modalidad)} (descuenta {cantidad(Number(d.unidades))} del stock)
+                      · {etiquetaDetalle(d)} (descuenta {cantidad(Number(d.unidades))} del stock)
                     </span>
                   )}
                 </span>

@@ -4,7 +4,7 @@ import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cantidad } from '@/utils/format'
-import { etiquetaModalidad, precioPresentacion } from '@/utils/presentaciones'
+import { etiquetaModalidadDe, precioPresentacion } from '@/utils/presentaciones'
 import { useNegocio, textoDocumento } from '@/config/negocio'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
@@ -50,7 +50,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
     const lineas: TicketLinea[] = items.map((i) => ({
       cantidadTexto: etiquetaCantidad(i),
       nombre: i.producto.nombre,
-      tag: etiquetaModalidad(i.modalidad),
+      tag: etiquetaModalidadDe(i.producto, i.modalidad),
       montoTexto: money(precioItem(i) * i.cantidad),
     }))
     const datos: TicketDatos = {
@@ -172,9 +172,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
             <div key={`${i.producto.id}::${i.modalidad}`} className="flex justify-between gap-2">
               <span className="min-w-0 break-words font-semibold text-ink-800">
                 {etiquetaCantidad(i)} {i.producto.nombre}
-                {etiquetaModalidad(i.modalidad) && (
+                {etiquetaModalidadDe(i.producto, i.modalidad) && (
                   <span className="ml-1 rounded bg-accent-100 px-1 py-0.5 text-[0.55rem] font-bold uppercase text-accent-700">
-                    {etiquetaModalidad(i.modalidad)}
+                    {etiquetaModalidadDe(i.producto, i.modalidad)}
                   </span>
                 )}
               </span>

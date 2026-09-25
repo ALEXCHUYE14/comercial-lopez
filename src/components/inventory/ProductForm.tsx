@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Camera, Upload, X, ScanLine } from 'lucide-react'
+import { Camera, Upload, X, ScanLine, Plus, Trash2 } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
@@ -11,6 +11,9 @@ import { beepExito, desbloquearAudioScanner } from '@/utils/beep'
 import {
   CATALOGO_PRESENTACIONES,
   clavesDisponibles,
+  clavePersonalizada,
+  esClaveConocida,
+  esClavePersonalizada,
   factorSugerido,
   presentacionesDe,
 } from '@/utils/presentaciones'
@@ -45,9 +48,34 @@ const presInicial = (): EstadoPresentaciones => ({
 function presDesdeProducto(p: Producto): EstadoPresentaciones {
   const estado = presInicial()
   for (const x of presentacionesDe(p)) {
-    estado[x.clave] = { on: true, factor: String(x.factor), precio: String(x.precio) }
+    if (esClaveConocida(x.clave)) estado[x.clave] = { on: true, factor: String(x.factor), precio: String(x.precio) }
   }
   return estado
+}
+
+// ── Presentaciones personalizadas (jerarquías de empaque propias del negocio,
+// ej. "Bolsa" = 10 unidades, "Paquete Maestro" = 5 bolsas = 50 unidades) ──
+// A diferencia de las fijas de arriba (interruptores con claves conocidas de
+// antemano), estas son filas libres: nombre, equivalencia y precio, todos
+// escritos por quien registra el producto. `id` identifica la fila en el
+// formulario; si la fila viene de una presentación YA guardada, `id` es su
+// clave persistida (siempre empieza con "personalizada__", ver
+// utils/presentaciones.ts) para no generar una clave nueva en cada edición.
+// Si es una fila agregada en esta misma sesión, `id` es un contador local que
+// nunca coincide con ese prefijo, y recién al guardar se le genera una clave
+// estable con clavePersonalizada().
+type FilaPersonalizada = { id: string; nombre: string; factor: string; precio: string }
+
+let contadorFilaNueva = 0
+function idFilaNueva(): string {
+  contadorFilaNueva += 1
+  return `nueva_${contadorFilaNueva}`
+}
+
+function personalizadasDesdeProducto(p: Producto): FilaPersonalizada[] {
+  return presentacionesDe(p)
+    .filter((x) => !esClaveConocida(x.clave))
+    .map((x) => ({ id: x.clave, nombre: x.nombre, factor: String(x.factor), precio: String(x.precio) }))
 }
 
 interface Props {
@@ -96,6 +124,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
   const [tieneSaco, setTieneSaco] = useState(false)
   const [tipoVenta, setTipoVenta] = useState<TipoVenta>('unidad')
   const [pres, setPres] = useState<EstadoPresentaciones>(presInicial)
+  const [personalizadas, setPersonalizadas] = useState<FilaPersonalizada[]>([])
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [arrastrando, setArrastrando] = useState(false)
@@ -123,12 +152,14 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       setTieneSaco(producto.tiene_saco)
       setTipoVenta(producto.tipo_venta ?? 'unidad')
       setPres(presDesdeProducto(producto))
+      setPersonalizadas(personalizadasDesdeProducto(producto))
     } else {
       setF(skuInicial ? { ...vacio, sku: skuInicial } : vacio)
       setTieneCaja(false)
       setTieneSaco(false)
       setTipoVenta('unidad')
       setPres(presInicial())
+      setPersonalizadas([])
       // Si llega un SKU precargado (viene de un escaneo sin coincidencia),
       // el usuario ya no necesita tocar ese campo: pasa el foco directo al
       // nombre, igual que hace onSkuDetectado tras escanear dentro del form.
@@ -185,6 +216,18 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
 
   function setPresCampo(clave: ClavePresentacion, campo: 'factor' | 'precio', valor: string) {
     setPres((prev) => ({ ...prev, [clave]: { ...prev[clave], [campo]: valor } }))
+  }
+
+  function agregarPersonalizada() {
+    setPersonalizadas((prev) => [...prev, { id: idFilaNueva(), nombre: '', factor: '', precio: '' }])
+  }
+
+  function quitarPersonalizada(id: string) {
+    setPersonalizadas((prev) => prev.filter((f) => f.id !== id))
+  }
+
+  function setCampoPersonalizada(id: string, campo: 'nombre' | 'factor' | 'precio', valor: string) {
+    setPersonalizadas((prev) => prev.map((f) => (f.id === id ? { ...f, [campo]: valor } : f)))
   }
 
   function onSkuDetectado(codigo: string) {
@@ -266,6 +309,58 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       }
       presentaciones.push({ clave, nombre, factor, precio })
     }
+
+    // Presentaciones PERSONALIZADAS (jerarquías de empaque propias del
+    // negocio: "Bolsa", "Paquete Maestro", ...). Antes de aceptarlas: nombre
+    // no vacío, sin choque de nombre con otra opción ya ofrecida (evita dos
+    // opciones idénticas confundiendo al cajero en el punto de venta), y la
+    // misma validación de equivalencia/precio que las fijas de arriba.
+    const nombresUsados = new Set<string>([(esGranel ? `por ${f.unidad}` : 'unidad').toLowerCase()])
+    if (!esGranel && tieneCaja) nombresUsados.add('caja')
+    if (esGranel && tieneSaco) nombresUsados.add('saco')
+    for (const p of presentaciones) nombresUsados.add(p.nombre.toLowerCase())
+
+    const clavesExistentes = new Set(presentaciones.map((p) => p.clave))
+    for (const fila of personalizadas) {
+      const nombreFila = fila.nombre.trim()
+      // Una fila que se agregó y se dejó completamente vacía se ignora sin
+      // bloquear el guardado (el usuario pudo tocar "Agregar" por error).
+      if (!nombreFila && !fila.factor.trim() && !fila.precio.trim()) continue
+      if (!nombreFila) {
+        toast.error('Cada presentación personalizada necesita un nombre.')
+        return
+      }
+      if (nombreFila.length > 40) {
+        toast.error(`"${nombreFila}": el nombre es muy largo (máximo 40 caracteres).`)
+        return
+      }
+      const nombreNorm = nombreFila.toLowerCase()
+      if (nombresUsados.has(nombreNorm)) {
+        toast.error(`Ya existe una presentación llamada "${nombreFila}". Usa otro nombre.`)
+        return
+      }
+      // Mismo redondeo-antes-de-validar que las presentaciones fijas (ver
+      // arriba): evita que un valor diminuto pase como "mayor a 0".
+      const factor = Math.round(parseFloat(fila.factor) * 1e6) / 1e6
+      const precio = Math.round(parseFloat(fila.precio) * 100) / 100
+      if (!Number.isFinite(factor) || factor <= 0) {
+        toast.error(`"${nombreFila}": indica cuántos ${esGranel ? f.unidad : 'unidades'} contiene (mayor a 0).`)
+        return
+      }
+      if (!Number.isFinite(precio) || precio <= 0) {
+        toast.error(`"${nombreFila}": indica el precio (mayor a 0).`)
+        return
+      }
+      nombresUsados.add(nombreNorm)
+      // Clave estable: si la fila ya tenía una (viene de una presentación
+      // guardada antes) se reutiliza tal cual, para no romper el enlace con
+      // el historial de ventas ya hecho con esa clave; si es una fila nueva
+      // de esta sesión, se genera recién ahora.
+      const clave = esClavePersonalizada(fila.id) ? fila.id : clavePersonalizada(nombreFila, clavesExistentes)
+      clavesExistentes.add(clave)
+      presentaciones.push({ clave, nombre: nombreFila, factor, precio })
+    }
+
     // Solo se envía la columna cuando hay presentaciones o hay que limpiar las
     // que tenía: un producto simple se guarda exactamente igual que antes.
     const teniaPresentaciones =
@@ -339,6 +434,37 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
   // unidad base exacta (ej. "paquete" habilita medio/cuarto de paquete; "kg"
   // habilita arroba y fracciones de kilo; "litro" no tiene predefinidas).
   const clavesPres = clavesDisponibles(tipoVenta, f.unidad, tieneCaja)
+
+  // Resumen de todos los niveles activos (base + caja/saco + presentaciones
+  // fijas encendidas + personalizadas con datos válidos), de menor a mayor
+  // equivalencia — ayuda a detectar a simple vista un error de multiplicación
+  // al armar una jerarquía de varios niveles (ej. Bolsa = 10, Paquete Maestro
+  // = 50): si un nivel que debería ser "mayor" aparece con menos equivalencia
+  // que uno "menor", salta a la vista antes de guardar.
+  const resumenNiveles: { nombre: string; factor: number }[] = [
+    { nombre: esGranel ? `Por ${f.unidad}` : 'Unidad', factor: 1 },
+  ]
+  if (!esGranel && tieneCaja) {
+    const upc = parseInt(f.unidades_por_caja, 10)
+    if (Number.isFinite(upc) && upc > 0) resumenNiveles.push({ nombre: 'Caja', factor: upc })
+  }
+  if (esGranel && tieneSaco) {
+    const kgSaco = parseFloat(f.kg_por_saco)
+    if (Number.isFinite(kgSaco) && kgSaco > 0) resumenNiveles.push({ nombre: 'Saco', factor: kgSaco })
+  }
+  for (const clave of clavesPres) {
+    const factorNum = parseFloat(pres[clave].factor)
+    if (pres[clave].on && Number.isFinite(factorNum) && factorNum > 0) {
+      resumenNiveles.push({ nombre: CATALOGO_PRESENTACIONES[clave].nombre, factor: factorNum })
+    }
+  }
+  for (const fila of personalizadas) {
+    const factorNum = parseFloat(fila.factor)
+    if (fila.nombre.trim() && Number.isFinite(factorNum) && factorNum > 0) {
+      resumenNiveles.push({ nombre: fila.nombre.trim(), factor: factorNum })
+    }
+  }
+  resumenNiveles.sort((a, b) => a.factor - b.factor)
 
   return (
     <Sheet
@@ -730,6 +856,113 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
             })}
           </div>
         </div>
+        )}
+
+        {/* Presentaciones personalizadas: para jerarquías de empaque propias
+            del negocio que no entran en el catálogo fijo de arriba — ej. un
+            "Paquete Maestro" que contiene 5 "Bolsas" de 10 unidades cada una
+            (equivale a 50 unidades base). A diferencia del catálogo fijo,
+            SIEMPRE está disponible (no depende del tipo de venta ni de la
+            unidad elegida): cada fila define su propio nombre, cuánto
+            consume de la unidad base y su precio. Cada nivel se escribe
+            directamente en unidades base (no como fracción del nivel
+            anterior): si 1 Bolsa = 10 unidades, escribe 10; si 1 Paquete
+            Maestro = 5 Bolsas, escribe 50 (5 × 10, la equivalencia acumulada
+            hasta la unidad base) — el resumen de abajo ayuda a verificarlo. */}
+        <div className="rounded-xl border border-ink-100 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-ink-800">Presentaciones personalizadas</p>
+              <p className="text-xs text-ink-400">
+                Para empaques propios del negocio (ej. Bolsa, Paquete Maestro, Fardo, Ciento).
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={agregarPersonalizada} className="shrink-0">
+              <Plus className="size-3.5" /> Agregar
+            </Button>
+          </div>
+
+          {personalizadas.length > 0 && (
+            <div className="mt-3 space-y-2.5">
+              {personalizadas.map((fila) => {
+                const factorNum = parseFloat(fila.factor)
+                const factorOk = Number.isFinite(factorNum) && factorNum > 0
+                return (
+                  <div key={fila.id} className="rounded-lg bg-ink-50 p-2.5">
+                    <div className="flex items-center gap-2">
+                      <input
+                        className="input flex-1"
+                        value={fila.nombre}
+                        onChange={(e) => setCampoPersonalizada(fila.id, 'nombre', e.target.value)}
+                        placeholder="Ej. Bolsa, Paquete Maestro..."
+                        maxLength={40}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => quitarPersonalizada(fila.id)}
+                        className="grid size-9 shrink-0 place-items-center rounded-lg text-ink-400 hover:bg-red-50 hover:text-red-600"
+                        aria-label={`Quitar ${fila.nombre.trim() || 'presentación personalizada'}`}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                    <div className="mt-2.5 grid grid-cols-2 gap-3">
+                      <Campo label={`${esGranel ? f.unidad : 'unidades'} que contiene`}>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.001}
+                          className="input tabular"
+                          value={fila.factor}
+                          onChange={(e) => setCampoPersonalizada(fila.id, 'factor', e.target.value)}
+                          placeholder="0"
+                        />
+                      </Campo>
+                      <Campo label="Precio (S/)">
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          className="input tabular"
+                          value={fila.precio}
+                          onChange={(e) => setCampoPersonalizada(fila.id, 'precio', e.target.value)}
+                          placeholder="0.00"
+                        />
+                      </Campo>
+                    </div>
+                    {factorOk && (
+                      <p className="mt-2 text-xs text-ink-400">
+                        Vender 1 {fila.nombre.trim() || 'presentación'} descuenta{' '}
+                        <b className="text-ink-600">{cantidad(factorNum)} {esGranel ? f.unidad : 'unidades'}</b> del stock.
+                      </p>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Resumen de niveles: solo lectura, ayuda a verificar la jerarquía
+            completa de un vistazo antes de guardar (ej. confirmar que "Paquete
+            Maestro" realmente equivale a más que "Bolsa"). Se oculta si solo
+            hay un nivel (la venta suelta), donde no aporta nada nuevo. */}
+        {resumenNiveles.length > 1 && (
+          <div className="rounded-xl bg-ink-50 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-500">
+              Resumen de niveles
+            </p>
+            <ul className="space-y-1">
+              {resumenNiveles.map((n) => (
+                <li key={n.nombre} className="flex items-center justify-between text-xs text-ink-600">
+                  <span>1 {n.nombre}</span>
+                  <span className="tabular font-semibold text-ink-800">
+                    = {cantidad(n.factor)} {esGranel ? f.unidad : 'u.'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {/* Foto del producto */}
