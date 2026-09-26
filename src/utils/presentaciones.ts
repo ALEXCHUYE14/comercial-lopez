@@ -152,6 +152,31 @@ export function clavePersonalizada(nombre: string, existentes: Iterable<string>)
   return `${base}_${n}`
 }
 
+// Plantilla para huevos: además de Docena / Media docena (que ya existen como
+// presentaciones fijas, 12 y 6 unidades) se venden por Plancha, Ciento y Jaba.
+// Cada equivalencia es en UNIDADES (el stock de huevos se lleva por unidad).
+// Ojo: la plancha estándar en Perú trae 30 huevos y la jaba 360 (12 planchas),
+// pero es solo el valor inicial — queda editable en el formulario por si el
+// proveedor del negocio maneja otra cantidad.
+export const PLANTILLA_HUEVOS: { nombre: string; factor: number }[] = [
+  { nombre: 'Media plancha', factor: 15 },
+  { nombre: 'Plancha', factor: 30 },
+  { nombre: 'Medio ciento', factor: 50 },
+  { nombre: 'Ciento', factor: 100 },
+  { nombre: 'Media jaba', factor: 180 },
+  { nombre: 'Jaba', factor: 360 },
+]
+
+/** Filas de la plantilla de huevos que AÚN no existen (comparación por nombre,
+ * sin distinguir mayúsculas/espacios): aplicar la plantilla dos veces, o sobre
+ * un producto que ya tiene "Jaba" configurada, nunca duplica ni pisa nada. */
+export function filasFaltantesPlantillaHuevos(
+  nombresExistentes: Iterable<string>,
+): { nombre: string; factor: number }[] {
+  const usados = new Set([...nombresExistentes].map((n) => n.trim().toLowerCase()))
+  return PLANTILLA_HUEVOS.filter((p) => !usados.has(p.nombre.toLowerCase()))
+}
+
 /** Verdadero si el valor tiene la forma mínima de una Presentacion utilizable:
  * clave y nombre no vacíos, factor > 0, precio >= 0. A propósito NO exige que
  * la clave esté en el catálogo fijo — admite presentaciones personalizadas

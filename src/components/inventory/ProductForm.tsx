@@ -15,6 +15,7 @@ import {
   esClaveConocida,
   esClavePersonalizada,
   factorSugerido,
+  filasFaltantesPlantillaHuevos,
   presentacionesDe,
 } from '@/utils/presentaciones'
 import type { Categoria, ClavePresentacion, Presentacion, Producto, TipoVenta } from '@/types/database'
@@ -220,6 +221,46 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
 
   function agregarPersonalizada() {
     setPersonalizadas((prev) => [...prev, { id: idFilaNueva(), nombre: '', factor: '', precio: '' }])
+  }
+
+  // Plantilla de huevos: activa Docena (12) y Media docena (6) — presentaciones
+  // fijas que ya existían — y agrega como personalizadas Media plancha, Plancha,
+  // Medio ciento, Ciento, Media jaba y Jaba (ver PLANTILLA_HUEVOS). Solo agrega
+  // lo que falta: lo que ya estaba configurado (con sus precios) no se toca, y
+  // aplicarla dos veces no duplica filas. Los precios quedan vacíos a propósito
+  // (los define el negocio); al guardar, cada presentación exige su precio, y
+  // las que no se vendan se quitan con el botón de basura.
+  function aplicarPlantillaHuevos() {
+    // Las equivalencias de la plantilla están en UNIDADES: con otra unidad base
+    // (kg, paquete, ...) quedarían mal. El botón ya se oculta en esos casos;
+    // esta guarda protege por si cambia la unidad con el formulario abierto.
+    if (esGranel || f.unidad !== 'unidad') {
+      toast.error('La plantilla de huevos requiere venta "Por unidad" con unidad base "unidad".')
+      return
+    }
+    setPres((prev) => {
+      const siguiente = { ...prev }
+      for (const clave of ['docena', 'media_docena'] as const) {
+        if (siguiente[clave].on) continue
+        const sugerido = factorSugerido(clave, 'unidad')
+        siguiente[clave] = {
+          ...siguiente[clave],
+          on: true,
+          factor: siguiente[clave].factor || (sugerido !== null ? String(sugerido) : ''),
+        }
+      }
+      return siguiente
+    })
+    setPersonalizadas((prev) => [
+      ...prev,
+      ...filasFaltantesPlantillaHuevos(prev.map((p) => p.nombre)).map((p) => ({
+        id: idFilaNueva(),
+        nombre: p.nombre,
+        factor: String(p.factor),
+        precio: '',
+      })),
+    ])
+    toast.exito('Plantilla de huevos aplicada: completa el precio de cada presentación o quita las que no uses.')
   }
 
   function quitarPersonalizada(id: string) {
@@ -877,16 +918,35 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
                 Para empaques propios del negocio (ej. Bolsa, Paquete Maestro, Fardo, Ciento).
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={agregarPersonalizada} className="shrink-0">
-              <Plus className="size-3.5" /> Agregar
-            </Button>
+            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+              {!esGranel && f.unidad === 'unidad' && (
+                <Button variant="outline" size="sm" onClick={aplicarPlantillaHuevos}>
+                  🥚 Huevos
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={agregarPersonalizada}>
+                <Plus className="size-3.5" /> Agregar
+              </Button>
+            </div>
           </div>
+          {!esGranel && f.unidad === 'unidad' && (
+            <p className="mt-1.5 text-xs text-ink-400">
+              <b>Huevos:</b> agrega Docena, Media docena, Media plancha, Plancha (30), Medio ciento,
+              Ciento, Media jaba y Jaba (360). El precio por unidad es el "Precio venta" de arriba.
+              Ajusta la plancha si la tuya trae otra cantidad.
+            </p>
+          )}
 
           {personalizadas.length > 0 && (
             <div className="mt-3 space-y-2.5">
               {personalizadas.map((fila) => {
                 const factorNum = parseFloat(fila.factor)
                 const factorOk = Number.isFinite(factorNum) && factorNum > 0
+                // Pista (solo placeholder, nunca se guarda sola): precio base x
+                // equivalencia, ej. huevo a S/ 0.50 x 30 = S/ 15.00 la plancha.
+                const precioSugerido = factorOk
+                  ? Math.round((parseFloat(f.precio_venta) || 0) * factorNum * 100) / 100
+                  : null
                 return (
                   <div key={fila.id} className="rounded-lg bg-ink-50 p-2.5">
                     <div className="flex items-center gap-2">
@@ -926,7 +986,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
                           className="input tabular"
                           value={fila.precio}
                           onChange={(e) => setCampoPersonalizada(fila.id, 'precio', e.target.value)}
-                          placeholder="0.00"
+                          placeholder={precioSugerido ? precioSugerido.toFixed(2) : '0.00'}
                         />
                       </Campo>
                     </div>
