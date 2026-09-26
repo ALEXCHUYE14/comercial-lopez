@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cantidad } from '@/utils/format'
 import { etiquetaModalidadDe, precioPresentacion } from '@/utils/presentaciones'
+import { admiteVuelto, lineasPago, metodoParaQr } from '@/utils/pagos'
 import { useNegocio, textoDocumento } from '@/config/negocio'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
@@ -16,6 +17,7 @@ const ETIQUETA: Record<string, string> = {
   efectivo: 'Efectivo',
   yape: 'Yape',
   fiado: 'Fiado',
+  mixto: 'Mixto',
 }
 
 function precioItem(item: ItemCarrito): number {
@@ -64,6 +66,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       metodo: venta.metodo,
       pagoRecibido: venta.pago_recibido,
       vuelto: venta.vuelto,
+      pagos: venta.pagos ?? null,
       clienteNombre: venta.cliente_nombre,
       anulada: venta.anulada,
     }
@@ -76,7 +79,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
     const { datos, lineas } = datosTicket()
     setImprimiendoCable(true)
     try {
-      const { qr, fallo } = await qrParaTicket(datos.metodo, datos.anulada)
+      const { qr, fallo } = await qrParaTicket(metodoParaQr(datos.metodo, datos.pagos), datos.anulada)
       if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
       imprimirTicketHtml(construirTicketHtml(datos, lineas, qr))
     } catch (e) {
@@ -100,7 +103,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
     setImprimiendoBt(true)
     try {
       const { datos, lineas } = datosTicket()
-      const { qr, fallo } = await qrParaTicket(datos.metodo, datos.anulada)
+      const { qr, fallo } = await qrParaTicket(metodoParaQr(datos.metodo, datos.pagos), datos.anulada)
       if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
       await imprimirPorBluetooth(construirTicketEscPos(datos, lineas, qr))
       toast.exito('Ticket enviado a la impresora Bluetooth')
@@ -208,11 +211,16 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
         {/* Pago */}
         <div className="space-y-0.5">
-          <div className="flex justify-between font-bold text-ink-800">
-            <span>{ETIQUETA[venta.metodo] ?? venta.metodo}</span>
-            <span className="tabular">{money(venta.pago_recibido)}</span>
-          </div>
-          {venta.metodo === 'efectivo' && venta.vuelto > 0 && (
+          {lineasPago(
+            { metodo: venta.metodo, pagoRecibido: venta.pago_recibido, vuelto: venta.vuelto, pagos: venta.pagos },
+            (m) => ETIQUETA[m] ?? m,
+          ).map((l) => (
+            <div key={l.etiqueta} className="flex justify-between font-bold text-ink-800">
+              <span>{l.etiqueta}</span>
+              <span className="tabular">{money(l.monto)}</span>
+            </div>
+          ))}
+          {admiteVuelto(venta.metodo) && venta.vuelto > 0 && (
             <PreviewRow k="Vuelto" v={money(venta.vuelto)} />
           )}
           {venta.cliente_nombre && (

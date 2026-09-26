@@ -90,4 +90,5 @@ export const ETIQUETA_PAGO: Record<string, string> = {
   efectivo: 'Efectivo',
   yape: 'Yape',
   fiado: 'Fiado',
+  mixto: 'Mixto',
 }

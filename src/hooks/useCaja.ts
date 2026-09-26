@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { inicioDelDia, finDelDia, money } from '@/utils/format'
+import { montoPorMetodo } from '@/utils/pagos'
 import type { CajaRegistro, ResultadoArqueo } from '@/types/database'
 
 export interface ResumenCierre {
@@ -162,7 +163,9 @@ export function useCaja(cajeroId: string | null) {
       await Promise.all([
         supabase
           .from('ventas')
-          .select('id, metodo, total')
+          // '*' (no una lista de columnas) para traer tambien "pagos" sin
+          // depender de que la migracion de pagos mixtos ya este aplicada.
+          .select('*')
           .eq('cajero_id', cajeroId)
           .is('caja_id', null)
           .eq('anulada', false)
@@ -185,10 +188,8 @@ export function useCaja(cajeroId: string | null) {
       ])
 
     const listaHuerfanas = huerfanas ?? []
-    const sumaPorMetodo = (m: string) =>
-      listaHuerfanas
-        .filter((v) => v.metodo === m)
-        .reduce((s, v) => s + toNum(v.total), 0)
+    // montoPorMetodo reparte las ventas de pago mixto entre efectivo y yape.
+    const sumaPorMetodo = (m: string) => montoPorMetodo(listaHuerfanas, m)
 
     const totalEfectivoInicial = sumaPorMetodo('efectivo')
     const totalYapeInicial = sumaPorMetodo('yape')

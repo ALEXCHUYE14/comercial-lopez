@@ -42,7 +42,7 @@ import {
 import { BRAND } from '@/config/brand'
 import { beepExito, beepError, desbloquearAudioScanner } from '@/utils/beep'
 import { pareceErrorDeRed, type VentaOffline } from '@/utils/offlineDB'
-import type { ItemCarrito, MetodoPago, ModalidadVenta, Producto, Venta } from '@/types/database'
+import type { ItemCarrito, MetodoPago, ModalidadVenta, PagoVenta, Producto, Venta } from '@/types/database'
 
 export function POS() {
   const { productos, categorias, cargando } = useProductos()
@@ -269,7 +269,12 @@ export function POS() {
     await ventasOffline.descartar(p.clientId)
   }
 
-  async function cobrar(metodo: MetodoPago, pagoRecibido: number, clienteId?: string) {
+  async function cobrar(
+    metodo: MetodoPago,
+    pagoRecibido: number,
+    clienteId?: string,
+    pagos?: PagoVenta[],
+  ) {
     // El fiado depende de validar en el servidor el limite de credito
     // actualizado del cliente (otro dispositivo pudo haberle vendido al
     // mismo cliente mientras este estaba offline) — nunca se encola.
@@ -314,6 +319,10 @@ export function POS() {
         p_pago_recibido: pagoRecibido,
         p_caja_id: caja?.id ?? null,
         p_cliente_id: clienteId ?? null,
+        // Solo en pago mixto: si se enviara siempre (aunque sea null), un
+        // servidor que aun no tenga la migracion de pagos mixtos rechazaria
+        // TODAS las ventas por no conocer el parametro.
+        ...(metodo === 'mixto' && pagos ? { p_pagos: pagos } : {}),
       })
       if (error) throw error
 
@@ -327,7 +336,12 @@ export function POS() {
       // Actualizar totales de la caja
       if (caja?.id) {
         try {
-          await sumarVenta(caja.id, metodo, carrito.totales.total)
+          if (metodo === 'mixto') {
+            // Cada parte suma al acumulado de SU metodo (efectivo / yape).
+            for (const p of pagos ?? []) await sumarVenta(caja.id, p.metodo, p.monto)
+          } else {
+            await sumarVenta(caja.id, metodo, carrito.totales.total)
+          }
         } catch {
           advertencia = 'La venta se registró, pero no se pudo actualizar el total de caja. Avisa al administrador.'
         }

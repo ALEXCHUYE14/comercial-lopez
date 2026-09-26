@@ -8,11 +8,13 @@ import { money, fechaHora } from '@/utils/format'
 import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { QrTermico } from '@/utils/qrTermico'
 import type { TicketDatos, TicketLinea } from '@/utils/ticket'
+import { admiteVuelto, lineasPago } from '@/utils/pagos'
 
 const ETIQUETA_METODO: Record<string, string> = {
   efectivo: 'Efectivo',
   yape: 'Yape',
   fiado: 'Fiado',
+  mixto: 'Mixto',
   transferencia: 'Transferencia',
   otro: 'Otro',
 }
@@ -259,8 +261,11 @@ export function construirTicketEscPos(
   // fila() en vez de negrita() con texto concatenado: asi el monto queda
   // alineado al borde derecho, igual que en el ticket HTML (.row-pago usa
   // justify-between) y que las filas de Vuelto/Fiado a de abajo.
-  t.filaNegrita(ETIQUETA_METODO[venta.metodo] ?? venta.metodo, money(venta.pagoRecibido))
-  if (venta.metodo === 'efectivo' && venta.vuelto > 0) {
+  // Una linea por metodo (pago mixto: Efectivo y Yape).
+  for (const l of lineasPago(venta, (m) => ETIQUETA_METODO[m] ?? m)) {
+    t.filaNegrita(l.etiqueta, money(l.monto))
+  }
+  if (admiteVuelto(venta.metodo) && venta.vuelto > 0) {
     t.fila('Vuelto', money(venta.vuelto))
   }
   if (venta.clienteNombre) {

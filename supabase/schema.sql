@@ -30,6 +30,14 @@ do $$ begin
   create type metodo_pago as enum ('efectivo', 'tarjeta', 'yape', 'plin', 'transferencia', 'fiado');
 exception when duplicate_object then null; end $$;
 
+-- Pago MIXTO: una venta cobrada parte en efectivo y parte en Yape. El desglose
+-- vive en ventas.pagos (ver mas abajo); 'mixto' solo marca que hay que mirarlo.
+-- Migracion en caliente, igual que 'supervisor' arriba. Ojo: un valor de enum
+-- recien agregado no se puede USAR en la misma transaccion, por eso nada de
+-- este script lo referencia fuera del cuerpo de funciones (que se evaluan al
+-- ejecutarse, no al crearse) y siempre se compara como texto (metodo::text).
+alter type metodo_pago add value if not exists 'mixto';
+
 do $$ begin
   create type tipo_movimiento as enum ('entrada', 'salida', 'ajuste', 'venta', 'devolucion');
 exception when duplicate_object then null; end $$;
@@ -329,6 +337,14 @@ create table if not exists public.ventas (
 -- cliente por un corte de red), esta clave evita registrar la misma venta
 -- por duplicado — ver el chequeo al inicio del RPC registrar_venta.
 alter table public.ventas add column if not exists idempotency_key text;
+
+-- Desglose del pago cuando metodo = 'mixto':
+--   [ {"metodo":"efectivo","monto":30.00}, {"metodo":"yape","monto":20.00} ]
+-- La suma de los montos siempre es igual al total de la venta (lo valida
+-- registrar_venta). NULL en toda venta de un solo metodo, incluidas las
+-- anteriores a esta columna: siguen leyendose con "metodo" + "total".
+alter table public.ventas add column if not exists pagos jsonb;
+
 do $$ begin
   create unique index idx_ventas_idempotency_key on public.ventas (idempotency_key)
     where idempotency_key is not null;
@@ -711,6 +727,10 @@ $$;
 -- responde "Could not choose the best candidate function". Se elimina el
 -- overload viejo antes de crear el nuevo para dejar una sola version.
 drop function if exists public.registrar_venta(jsonb, metodo_pago, numeric, numeric, uuid, uuid, numeric);
+-- Version anterior (8 parametros, sin p_pagos): agregar un parametro NO la
+-- reemplaza con "create or replace", quedaria un overload ambiguo (mismo
+-- problema explicado arriba). Se elimina antes de crear la de 9 parametros.
+drop function if exists public.registrar_venta(jsonb, metodo_pago, numeric, numeric, uuid, uuid, numeric, text);
 create or replace function public.registrar_venta(
   p_items            jsonb,         -- [{ producto_id, cantidad, precio_unitario, modalidad }]
   p_metodo           metodo_pago,
@@ -719,7 +739,10 @@ create or replace function public.registrar_venta(
   p_caja_id          uuid     default null,
   p_cliente_id       uuid     default null,
   p_tasa_igv         numeric  default 0.18,
-  p_idempotency_key  text     default null
+  p_idempotency_key  text     default null,
+  -- Solo para metodo 'mixto': [{metodo, monto}] con exactamente un efectivo y
+  -- un yape (ver validacion en el paso 2b).
+  p_pagos            jsonb    default null
 )
 returns public.ventas
 language plpgsql
@@ -749,6 +772,12 @@ declare
   v_nom_pres    text;
   v_motivo      text;
   v_stock_final double precision;
+  -- Pago mixto (paso 2b)
+  v_pagos       jsonb;
+  v_pag_ef      numeric;
+  v_pag_ye      numeric;
+  v_n_ef        integer;
+  v_n_ye        integer;
 begin
   if jsonb_array_length(p_items) = 0 then
     raise exception 'El carrito esta vacio.';
@@ -830,6 +859,46 @@ begin
   v_base     := round(v_total / (1 + p_tasa_igv), 2);
   v_igv      := round(v_total - v_base, 2);
 
+  -- 2b) Pago mixto: el servidor NO confia en lo que arme el navegador. Exige
+  --     exactamente un pago en efectivo y uno en yape, ambos > 0, que sumen el
+  --     total EXACTO de la venta y que lo recibido alcance el total. Cualquier
+  --     incumplimiento aborta toda la venta (esta funcion es una sola
+  --     transaccion: no queda venta, detalle, stock ni kardex a medias).
+  v_pagos := null;
+  if p_metodo::text = 'mixto' then
+    if p_pagos is null or jsonb_typeof(p_pagos) <> 'array' or jsonb_array_length(p_pagos) <> 2 then
+      raise exception 'El pago mixto requiere exactamente dos pagos: efectivo y yape.';
+    end if;
+    select
+      max((e.item->>'monto')::numeric) filter (where e.item->>'metodo' = 'efectivo'),
+      max((e.item->>'monto')::numeric) filter (where e.item->>'metodo' = 'yape'),
+      count(*) filter (where e.item->>'metodo' = 'efectivo'),
+      count(*) filter (where e.item->>'metodo' = 'yape')
+      into v_pag_ef, v_pag_ye, v_n_ef, v_n_ye
+      from jsonb_array_elements(p_pagos) as e(item);
+    if v_n_ef <> 1 or v_n_ye <> 1 then
+      raise exception 'El pago mixto debe tener un pago en efectivo y uno en yape (sin repetir metodo).';
+    end if;
+    if v_pag_ef is null or v_pag_ye is null or v_pag_ef <= 0 or v_pag_ye <= 0 then
+      raise exception 'En el pago mixto, efectivo y yape deben ser mayores a 0.';
+    end if;
+    v_pag_ef := round(v_pag_ef, 2);
+    v_pag_ye := round(v_pag_ye, 2);
+    if abs((v_pag_ef + v_pag_ye) - v_total) > 0.005 then
+      raise exception 'Los pagos (efectivo % + yape %) no suman el total de la venta (%).',
+        v_pag_ef, v_pag_ye, v_total;
+    end if;
+    if p_pago_recibido is null or p_pago_recibido < v_total then
+      raise exception 'El monto recibido (%) es menor al total (%).', p_pago_recibido, v_total;
+    end if;
+    v_pagos := jsonb_build_array(
+      jsonb_build_object('metodo', 'efectivo', 'monto', v_pag_ef),
+      jsonb_build_object('metodo', 'yape',     'monto', v_pag_ye)
+    );
+  elsif p_pagos is not null and jsonb_typeof(p_pagos) = 'array' and jsonb_array_length(p_pagos) > 0 then
+    raise exception 'El desglose de pagos solo aplica al metodo mixto.';
+  end if;
+
   -- 3) Cabecera de la venta
   -- El bloque exception cubre una carrera muy angosta pero real en el modo
   -- offline: dos reintentos de sincronizacion de la MISMA venta encolada
@@ -841,12 +910,12 @@ begin
     insert into public.ventas (
       cajero_id, cajero_nombre, caja_id, cliente_id, cliente_nombre,
       subtotal, descuento, igv, total, metodo, pago_recibido, vuelto,
-      idempotency_key
+      idempotency_key, pagos
     ) values (
       auth.uid(), v_nombre, p_caja_id, p_cliente_id, v_cli_nombre,
       v_subtotal, coalesce(p_descuento, 0), v_igv, v_total,
       p_metodo, p_pago_recibido, round(greatest(p_pago_recibido - v_total, 0), 2),
-      p_idempotency_key
+      p_idempotency_key, v_pagos
     ) returning * into v_venta;
   exception when unique_violation then
     if p_idempotency_key is null then
@@ -1016,6 +1085,7 @@ declare
   v_caja    public.cajas%rowtype;
   v_nombre  text;
   v_admin   boolean;
+  v_pg      record;
 begin
   if auth.uid() is null then
     raise exception 'Sesion no valida.';
@@ -1078,6 +1148,19 @@ begin
         update public.cajas set total_yape = greatest(total_yape - v_venta.total, 0) where id = v_caja.id;
       elsif v_venta.metodo = 'fiado' then
         update public.cajas set total_fiado = greatest(total_fiado - v_venta.total, 0) where id = v_caja.id;
+      elsif v_venta.metodo::text = 'mixto' and jsonb_typeof(v_venta.pagos) = 'array' then
+        -- Pago mixto: cada parte se resta del acumulado de SU metodo (la parte
+        -- en efectivo del efectivo, la de yape del yape).
+        for v_pg in
+          select e.item->>'metodo' as metodo, (e.item->>'monto')::numeric as monto
+          from jsonb_array_elements(v_venta.pagos) as e(item)
+        loop
+          if v_pg.metodo = 'efectivo' then
+            update public.cajas set total_efectivo = greatest(total_efectivo - v_pg.monto, 0) where id = v_caja.id;
+          elsif v_pg.metodo = 'yape' then
+            update public.cajas set total_yape = greatest(total_yape - v_pg.monto, 0) where id = v_caja.id;
+          end if;
+        end loop;
       end if;
     end if;
   end if;

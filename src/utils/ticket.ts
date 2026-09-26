@@ -13,11 +13,14 @@
 import { money, fechaHora, escaparHtml } from '@/utils/format'
 import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { QrTermico } from '@/utils/qrTermico'
+import { admiteVuelto, lineasPago } from '@/utils/pagos'
+import type { PagoVenta } from '@/types/database'
 
 const ETIQUETA_METODO: Record<string, string> = {
   efectivo: 'Efectivo',
   yape: 'Yape',
   fiado: 'Fiado',
+  mixto: 'Mixto',
   transferencia: 'Transferencia',
   otro: 'Otro',
 }
@@ -41,6 +44,8 @@ export interface TicketDatos {
   metodo: string
   pagoRecibido: number
   vuelto: number
+  /** Desglose cuando metodo = 'mixto' (efectivo + yape). */
+  pagos?: PagoVenta[] | null
   clienteNombre?: string | null
   anulada?: boolean
 }
@@ -82,8 +87,17 @@ export function construirTicketHtml(
       ? `<div class="row"><span>Descuento</span><span>- ${money(venta.descuento)}</span></div>`
       : ''
 
+  // Una linea por metodo de pago: una sola en ventas normales; en pago mixto,
+  // Efectivo (lo entregado) y Yape.
+  const pagoLineas = lineasPago(venta, (m) => ETIQUETA_METODO[m] ?? m)
+    .map(
+      (l) =>
+        `<div class="row-pago"><span>${escaparHtml(l.etiqueta)}</span><span>${money(l.monto)}</span></div>`,
+    )
+    .join('\n  ')
+
   const vueltoLine =
-    venta.metodo === 'efectivo' && venta.vuelto > 0
+    admiteVuelto(venta.metodo) && venta.vuelto > 0
       ? `<div class="row"><span>Vuelto</span><span>${money(venta.vuelto)}</span></div>`
       : ''
 
@@ -312,10 +326,7 @@ export function construirTicketHtml(
 
   <hr class="sep-dash"/>
 
-  <div class="row-pago">
-    <span>${escaparHtml(ETIQUETA_METODO[venta.metodo] ?? venta.metodo)}</span>
-    <span>${money(venta.pagoRecibido)}</span>
-  </div>
+  ${pagoLineas}
   ${vueltoLine}
   ${clienteLine}
 

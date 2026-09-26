@@ -1,7 +1,10 @@
 // Tipos del dominio del sistema Comercial López JYD EIRL
 
 export type Rol = 'administrador' | 'supervisor' | 'cajero'
-export type MetodoPago = 'efectivo' | 'yape' | 'fiado'
+// 'mixto' = una venta cobrada parte en efectivo y parte en yape (desglose en Venta.pagos).
+export type MetodoPago = 'efectivo' | 'yape' | 'fiado' | 'mixto'
+/** Una parte de un pago mixto. */
+export type PagoVenta = { metodo: 'efectivo' | 'yape'; monto: number }
 export type TipoMovimiento = 'entrada' | 'salida' | 'ajuste' | 'venta' | 'devolucion'
 export type EstadoCompra = 'pagado' | 'pendiente'
 export type MotivoMerma = 'vencido' | 'danado' | 'consumo_interno' | 'otro'
@@ -116,6 +119,8 @@ export type Venta = {
   /** Auditoría de la anulación (ver RPC anular_venta). Opcionales: ausentes en
    * ventas anteriores a esta función y en la venta sintética del modo offline. */
   anulada_por?: string | null
+  /** Desglose del pago cuando metodo = 'mixto' (ver utils/pagos.ts); null en el resto. */
+  pagos?: PagoVenta[] | null
   anulada_en?: string | null
   idempotency_key: string | null
   creado_en: string
@@ -340,6 +345,7 @@ export interface Database {
           p_cliente_id: string | null
           p_tasa_igv?: number
           p_idempotency_key?: string | null
+          p_pagos?: unknown
         }
         Returns: Venta
       }

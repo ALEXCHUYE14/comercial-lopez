@@ -33,6 +33,7 @@ import { supabase } from '@/lib/supabase'
 import { getNegocio } from '@/config/negocio'
 import { Card, Badge } from '@/components/ui/Button'
 import { money, numero, horaCorta, fechaHora, cx, ETIQUETA_PAGO } from '@/utils/format'
+import { montoPorMetodo, pagosDe } from '@/utils/pagos'
 import type { DetalleVenta, Producto } from '@/types/database'
 
 // Arma el mensaje de WhatsApp con el resumen de productos por vencer y abre
@@ -261,9 +262,9 @@ export function Dashboard() {
   const kpis = useMemo(() => {
     const totalVendido = ventas.reduce((s, v) => s + v.total, 0)
     const ticketProm = ventas.length ? totalVendido / ventas.length : 0
-    const efectivo = ventas
-      .filter((v) => v.metodo === 'efectivo')
-      .reduce((s, v) => s + v.total, 0)
+    // montoPorMetodo reparte las ventas de pago mixto: su parte en efectivo
+    // cuenta como efectivo (antes una venta mixta no sumaba en ningun lado).
+    const efectivo = montoPorMetodo(ventas, 'efectivo')
     return { totalVendido, transacciones: ventas.length, ticketProm, efectivo }
   }, [ventas])
 
@@ -281,7 +282,11 @@ export function Dashboard() {
 
   const porMetodo = useMemo(() => {
     const mapa = new Map<string, number>()
-    ventas.forEach((v) => mapa.set(v.metodo, (mapa.get(v.metodo) ?? 0) + v.total))
+    // Cada venta aporta a cada metodo lo que realmente se cobro con el (una
+    // venta mixta se reparte entre efectivo y yape en vez de una barra "Mixto").
+    ventas.forEach((v) =>
+      pagosDe(v).forEach((p) => mapa.set(p.metodo, (mapa.get(p.metodo) ?? 0) + p.monto)),
+    )
     return [...mapa.entries()].map(([metodo, total]) => ({
       metodo: ETIQUETA_PAGO[metodo] ?? metodo,
       total,

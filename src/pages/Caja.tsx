@@ -29,9 +29,15 @@ import { getNegocio, textoDocumento } from '@/config/negocio'
 import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
-import { money, fechaHora, horaCorta, ymd, ETIQUETA_PAGO, cx, escaparHtml } from '@/utils/format'
+import { money, fechaHora, horaCorta, ymd, cx } from '@/utils/format'
 import { mensajeError } from '@/utils/errors'
 import { mensajeVinculacion, type ResumenCierre } from '@/hooks/useCaja'
+import {
+  calcularResumenFinanciero,
+  cargarLogoDataUrl,
+  construirReporteCierrePdf,
+  nombreArchivoCierre,
+} from '@/utils/reporteCierrePdf'
 import { ETIQUETA_CATEGORIA_EGRESO, ETIQUETA_METODO_EGRESO } from '@/hooks/useEgresos'
 import { construirTicketCierreHtml, imprimirTicketCierreHtml } from '@/utils/ticketCierre'
 import { construirTicketCierreEscPos } from '@/utils/escposCierre'
@@ -77,279 +83,69 @@ const balanceNetoDe = (c: CajaRegistro): number =>
   toNum(c.total_cobros_efectivo) + toNum(c.total_cobros_yape) -
   toNum(c.total_egresos_efectivo) - toNum(c.total_egresos_otros)
 
-// ─── Generador de reporte PDF de cierre de caja ───────────────────────────────
+// ─── Reporte PDF de cierre de caja (descarga directa) ─────────────────────────
+// Genera un archivo .pdf y lo DESCARGA — ya no abre una ventana ni el dialogo
+// de impresion. La construccion del documento vive en utils/reporteCierrePdf.ts
+// (jsPDF cargado bajo demanda); aqui solo se leen los datos del turno.
 
 async function generarReportePDF(cajaData: CajaRegistro, montoRealContado: number): Promise<void> {
-  const w = window.open('', '_blank', 'width=960,height=780,menubar=no,toolbar=no')
-  if (!w) {
-    throw new Error(
-      'El navegador bloqueó la ventana del PDF. Habilita los popups para este sitio e intenta nuevamente.',
-    )
+  const [{ data: ventasData, error }, { data: cobrosData }, { data: egresosData }] = await Promise.all([
+    supabase.from('ventas').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
+    supabase.from('pagos_credito').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
+    supabase.from('egresos').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
+  ])
+
+  if (error) throw error
+
+  // Nombres de cliente para los cobros: se resuelven aparte (en vez de un
+  // embed de PostgREST) para mantener el mismo patron de consulta simple
+  // usado en el resto de la app (ver useClientes.calcularDiasSinPago).
+  const cobrosPrevios = cobrosData ?? []
+  const clienteIdsCobros = [...new Set(cobrosPrevios.map((p) => p.cliente_id))]
+  const nombresCliente = new Map<string, string>()
+  if (clienteIdsCobros.length > 0) {
+    const { data: clientesData } = await supabase
+      .from('clientes_credito')
+      .select('id, nombre')
+      .in('id', clienteIdsCobros)
+    ;(clientesData ?? []).forEach((c) => nombresCliente.set(c.id, c.nombre))
   }
 
-  w.document.write(
-    '<html><body style="font-family:sans-serif;display:grid;place-items:center;min-height:100vh;background:#f8f8f7;"><p style="font-size:1.1rem;color:#666;">Generando reporte PDF...</p></body></html>',
-  )
+  const ventas = ventasData ?? []
+  const cobros = cobrosPrevios.map((p) => ({ ...p, clienteNombre: nombresCliente.get(p.cliente_id) }))
+  const egresos = egresosData ?? []
 
-  try {
-    const [{ data: ventasData, error }, { data: cobrosData }, { data: egresosData }] = await Promise.all([
-      supabase.from('ventas').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
-      supabase.from('pagos_credito').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
-      supabase.from('egresos').select('*').eq('caja_id', cajaData.id).order('creado_en', { ascending: true }),
-    ])
+  // Totales del turno; las ventas de pago mixto se reparten entre efectivo y
+  // yape (ver utils/pagos.ts), y las anuladas no suman.
+  const resumen = calcularResumenFinanciero({
+    montoInicial: toNum(cajaData.monto_inicial),
+    ventasValidas: ventas.filter((v) => !v.anulada),
+    cobros,
+    egresos,
+    montoContado: toNum(montoRealContado),
+  })
 
-    if (error) throw error
+  const negocio = getNegocio()
+  const ahora = new Date().toISOString()
+  const cierre = cajaData.cerrada_en ?? ahora
+  const doc = await construirReporteCierrePdf({
+    negocio: {
+      nombre: negocio.nombre,
+      subtitulo: [textoDocumento(negocio), negocio.direccion].filter(Boolean).join(' - ') || 'Sistema de Gestion Comercial',
+    },
+    cajeroNombre: cajaData.cajero_nombre ?? '-',
+    abiertaEn: cajaData.abierta_en,
+    cerradaEn: cierre,
+    generadoEn: ahora,
+    ventas,
+    cobros,
+    egresos,
+    resumen,
+    logoDataUrl: await cargarLogoDataUrl(),
+  })
 
-    // Nombres de cliente para los cobros: se resuelven aparte (en vez de un
-    // embed de PostgREST) para mantener el mismo patron de consulta simple
-    // usado en el resto de la app (ver useClientes.calcularDiasSinPago).
-    const cobrosPrevios = cobrosData ?? []
-    const clienteIdsCobros = [...new Set(cobrosPrevios.map((p) => p.cliente_id))]
-    const nombresCliente = new Map<string, string>()
-    if (clienteIdsCobros.length > 0) {
-      const { data: clientesData } = await supabase
-        .from('clientes_credito')
-        .select('id, nombre')
-        .in('id', clienteIdsCobros)
-      ;(clientesData ?? []).forEach((c) => nombresCliente.set(c.id, c.nombre))
-    }
-
-    const ventas = ventasData ?? []
-    const ventasValidas  = ventas.filter((v) => !v.anulada)
-    const ventasAnuladas = ventas.filter((v) => v.anulada)
-
-    // toNum() antes de reduce previene concatenación si Supabase devolvió strings
-    const totalEfectivo = ventasValidas.filter((v) => v.metodo === 'efectivo').reduce((s, v) => s + toNum(v.total), 0)
-    const totalYape     = ventasValidas.filter((v) => v.metodo === 'yape').reduce((s, v) => s + toNum(v.total), 0)
-    const totalFiado    = ventasValidas.filter((v) => v.metodo === 'fiado').reduce((s, v) => s + toNum(v.total), 0)
-    const totalGeneral  = ventasValidas.reduce((s, v) => s + toNum(v.total), 0)
-    const totalVentasDirectas = totalEfectivo + totalYape
-
-    const cobros = cobrosPrevios
-    const cobrosEfectivo = cobros.filter((p) => p.metodo === 'efectivo').reduce((s, p) => s + toNum(p.monto), 0)
-    const cobrosYape     = cobros.filter((p) => p.metodo !== 'efectivo').reduce((s, p) => s + toNum(p.monto), 0)
-    const totalCobros    = cobrosEfectivo + cobrosYape
-
-    const egresos = egresosData ?? []
-    const egresosEfectivo = egresos.filter((e) => e.metodo === 'efectivo').reduce((s, e) => s + toNum(e.monto), 0)
-    const egresosOtros    = egresos.filter((e) => e.metodo !== 'efectivo').reduce((s, e) => s + toNum(e.monto), 0)
-    const totalEgresos    = egresosEfectivo + egresosOtros
-
-    const montoInicial      = toNum(cajaData.monto_inicial)
-    // Efectivo fisico esperado: fondo + ventas efectivo + cobros efectivo - egresos efectivo
-    const esperadoEfectivo  = montoInicial + totalEfectivo + cobrosEfectivo - egresosEfectivo
-    const diferencia        = toNum(montoRealContado) - esperadoEfectivo
-    // Balance neto del turno (formula completa del cierre de caja):
-    //   Total en caja = (Fondo inicial + Ventas directas + Cobros de deuda) - Egresos
-    const balanceNeto        = montoInicial + totalVentasDirectas + totalCobros - totalEgresos
-
-    const diferenciaColor = diferencia >= 0 ? '#065f46' : '#991b1b'
-    const diferenciaFondo = diferencia >= 0 ? '#ecfdf5' : '#fef2f2'
-    const diferenciaBorde = diferencia >= 0 ? '#a7f3d0' : '#fecaca'
-
-    const logoUrl = `${window.location.origin}/img/logo.png`
-    const ahora   = new Date().toISOString()
-
-    const filasVentas =
-      ventasValidas.length > 0
-        ? ventasValidas
-            .map(
-              (v) => `
-          <tr>
-            <td class="center">#${String(v.numero).padStart(4, '0')}</td>
-            <td class="center">${horaCorta(v.creado_en)}</td>
-            <td class="center"><span class="badge badge-${v.metodo}">${ETIQUETA_PAGO[v.metodo] ?? v.metodo}</span></td>
-            <td>${v.cliente_nombre ? `<span style="color:#92400e;">${v.cliente_nombre}</span>` : '<span style="color:#aaa;">—</span>'}</td>
-            <td class="right money">${money(toNum(v.total))}</td>
-          </tr>`,
-            )
-            .join('')
-        : `<tr><td colspan="5" style="text-align:center;padding:16px;color:#aaa;">Sin ventas registradas en este turno</td></tr>`
-
-    const filasCobros =
-      cobros.length > 0
-        ? cobros
-            .map(
-              (p) => `
-          <tr>
-            <td class="center">${horaCorta(p.creado_en)}</td>
-            <td>${nombresCliente.get(p.cliente_id) ?? '—'}</td>
-            <td class="center"><span class="badge badge-${p.metodo}">${ETIQUETA_PAGO[p.metodo] ?? p.metodo}</span></td>
-            <td>${p.nota ? `<span style="color:#888;">${p.nota}</span>` : ''}</td>
-            <td class="right money">${money(toNum(p.monto))}</td>
-          </tr>`,
-            )
-            .join('')
-        : `<tr><td colspan="5" style="text-align:center;padding:16px;color:#aaa;">Sin cobros de deuda registrados en este turno</td></tr>`
-
-    const filasEgresos =
-      egresos.length > 0
-        ? egresos
-            .map(
-              (e) => `
-          <tr>
-            <td class="center">${horaCorta(e.creado_en)}</td>
-            <td>${e.concepto}${e.proveedor_nombre ? ` <span style="color:#888;">(${e.proveedor_nombre})</span>` : ''}</td>
-            <td class="center">${e.metodo}</td>
-            <td class="right money">${money(toNum(e.monto))}</td>
-          </tr>`,
-            )
-            .join('')
-        : `<tr><td colspan="4" style="text-align:center;padding:16px;color:#aaa;">Sin egresos registrados en este turno</td></tr>`
-
-    const negocio = getNegocio()
-    const html = `<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="UTF-8"/>
-  <title>Cierre de Caja — ${escaparHtml(negocio.nombre)}</title>
-  <style>
-    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:'Helvetica Neue',Arial,sans-serif; font-size:10pt; color:#1a1a1a; background:#fff; padding:18mm 16mm 20mm; }
-    .header { display:flex; align-items:center; justify-content:space-between; border-bottom:2.5px solid #0e0e0d; padding-bottom:6mm; margin-bottom:8mm; }
-    .header-left { display:flex; align-items:center; gap:12px; }
-    .logo { height:54px; width:auto; border-radius:8px; object-fit:contain; }
-    .store-name { font-size:18pt; font-weight:900; letter-spacing:-0.5px; color:#0e0e0d; line-height:1.2; }
-    .store-sub { font-size:8.5pt; color:#888; margin-top:2px; }
-    .report-info { text-align:right; }
-    .report-title { font-size:13pt; font-weight:800; color:#0e0e0d; }
-    .report-meta { font-size:8.5pt; color:#666; margin-top:3px; line-height:1.7; }
-    .section { margin-bottom:8mm; }
-    .section-title { font-size:10.5pt; font-weight:800; color:#0e0e0d; text-transform:uppercase; letter-spacing:0.6px; border-bottom:1px solid #e5e5e5; padding-bottom:2.5mm; margin-bottom:4mm; }
-    .info-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:4mm; }
-    .info-card { background:#f8f8f7; border:1px solid #e5e5e5; border-radius:6px; padding:3.5mm; }
-    .info-label { font-size:7.5pt; font-weight:700; color:#888; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:1.5mm; }
-    .info-value { font-size:10pt; font-weight:700; color:#0e0e0d; }
-    table { width:100%; border-collapse:collapse; font-size:9pt; }
-    thead th { background:#0e0e0d; color:#fff; padding:3mm 4mm; font-weight:700; text-align:left; font-size:8.5pt; letter-spacing:0.3px; }
-    thead th.center { text-align:center; }
-    thead th.right { text-align:right; }
-    tbody tr:nth-child(even) { background:#fafafa; }
-    tbody td { padding:2.5mm 4mm; border-bottom:1px solid #eee; vertical-align:middle; }
-    tbody td.center { text-align:center; }
-    tbody td.right { text-align:right; }
-    tbody td.money { font-weight:700; }
-    tfoot td { padding:3mm 4mm; font-weight:800; font-size:10pt; background:#f0f0ef; border-top:2px solid #0e0e0d; }
-    tfoot td.right { text-align:right; color:#0e0e0d; }
-    .badge { display:inline-block; padding:1px 6px; border-radius:4px; font-size:7.5pt; font-weight:700; }
-    .badge-efectivo { background:#ecfdf5; color:#065f46; }
-    .badge-yape { background:#eff6ff; color:#1d4ed8; }
-    .badge-fiado { background:#fffbeb; color:#92400e; }
-    .summary-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:4mm; margin-bottom:4mm; }
-    .summary-grid.dos { grid-template-columns:1fr 1fr; }
-    .summary-card { border-radius:8px; padding:4mm; border:1px solid; }
-    .summary-card.efectivo { background:#ecfdf5; border-color:#a7f3d0; }
-    .summary-card.yape { background:#eff6ff; border-color:#bfdbfe; }
-    .summary-card.fiado { background:#fffbeb; border-color:#fde68a; }
-    .summary-card.cobro { background:#f0fdfa; border-color:#99f6e4; }
-    .summary-card.egreso { background:#fef2f2; border-color:#fecaca; }
-    .summary-label { font-size:7.5pt; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; opacity:0.65; margin-bottom:1.5mm; }
-    .summary-value { font-size:13pt; font-weight:900; }
-    .summary-card.efectivo .summary-value { color:#065f46; }
-    .summary-card.yape .summary-value { color:#1d4ed8; }
-    .summary-card.fiado .summary-value { color:#92400e; }
-    .summary-card.cobro .summary-value { color:#0f766e; }
-    .summary-card.egreso .summary-value { color:#b91c1c; }
-    .total-card { background:#0e0e0d; color:#fff; border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; margin-bottom:3mm; }
-    .total-label { font-size:9pt; font-weight:700; opacity:0.7; }
-    .total-value { font-size:16pt; font-weight:900; }
-    .balance-card { border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; background:${diferenciaFondo}; border:1.5px solid ${diferenciaBorde}; margin-bottom:3mm; }
-    .balance-desc { font-size:8.5pt; color:#666; }
-    .balance-desc b { color:#1a1a1a; }
-    .balance-value { font-size:15pt; font-weight:900; color:${diferenciaColor}; }
-    .neto-card { background:#fffbeb; border:1.5px solid #fde68a; border-radius:8px; padding:4mm 5mm; display:flex; justify-content:space-between; align-items:center; }
-    .neto-label { font-size:9pt; font-weight:700; color:#92400e; }
-    .neto-value { font-size:16pt; font-weight:900; color:#92400e; }
-    .footer { margin-top:10mm; border-top:1px solid #e5e5e5; padding-top:4mm; text-align:center; font-size:8pt; color:#aaa; line-height:1.7; }
-    @page { size:A4; margin:0; }
-    @media print { body { padding:14mm 13mm 16mm; } }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <div class="header-left">
-      <img src="${logoUrl}" class="logo" alt="${escaparHtml(negocio.nombre)}" onerror="this.style.display='none'"/>
-      <div>
-        <div class="store-name">${escaparHtml(negocio.nombre.toUpperCase())}</div>
-        <div class="store-sub">${escaparHtml([textoDocumento(negocio), negocio.direccion].filter(Boolean).join(' · ') || 'Sistema de Gestion Comercial')} · Reporte Interno</div>
-      </div>
-    </div>
-    <div class="report-info">
-      <div class="report-title">Reporte de Cierre de Caja</div>
-      <div class="report-meta">Cajero: <b>${escaparHtml(cajaData.cajero_nombre ?? '—')}</b><br/>Generado: ${fechaHora(ahora)}</div>
-    </div>
-  </div>
-  <div class="section">
-    <div class="section-title">Información de la Sesión</div>
-    <div class="info-grid">
-      <div class="info-card"><div class="info-label">Apertura</div><div class="info-value">${fechaHora(cajaData.abierta_en)}</div></div>
-      <div class="info-card"><div class="info-label">Cierre</div><div class="info-value">${fechaHora(ahora)}</div></div>
-      <div class="info-card"><div class="info-label">Fondo Inicial</div><div class="info-value">${money(montoInicial)}</div></div>
-      <div class="info-card"><div class="info-label">Transacciones</div><div class="info-value">${ventasValidas.length} válidas${ventasAnuladas.length > 0 ? ` · ${ventasAnuladas.length} anuladas` : ''}</div></div>
-    </div>
-  </div>
-  <div class="section">
-    <div class="section-title">Detalle de Ventas del Turno</div>
-    <table>
-      <thead><tr><th class="center">Ticket</th><th class="center">Hora</th><th class="center">Método</th><th>Cliente</th><th class="right">Total</th></tr></thead>
-      <tbody>${filasVentas}</tbody>
-      ${ventasValidas.length > 0 ? `<tfoot><tr><td colspan="4"><b>TOTAL VENDIDO (${ventasValidas.length} ventas válidas)</b></td><td class="right">${money(totalGeneral)}</td></tr></tfoot>` : ''}
-    </table>
-  </div>
-  <div class="section">
-    <div class="section-title">Cobros de Deuda del Turno (Ingreso por Cobranza)</div>
-    <table>
-      <thead><tr><th class="center">Hora</th><th>Cliente</th><th class="center">Método</th><th>Nota</th><th class="right">Monto</th></tr></thead>
-      <tbody>${filasCobros}</tbody>
-      ${cobros.length > 0 ? `<tfoot><tr><td colspan="4"><b>TOTAL COBRADO (${cobros.length} abono${cobros.length === 1 ? '' : 's'})</b></td><td class="right">${money(totalCobros)}</td></tr></tfoot>` : ''}
-    </table>
-  </div>
-  <div class="section">
-    <div class="section-title">Egresos del Turno</div>
-    <table>
-      <thead><tr><th class="center">Hora</th><th>Concepto</th><th class="center">Método</th><th class="right">Monto</th></tr></thead>
-      <tbody>${filasEgresos}</tbody>
-      ${egresos.length > 0 ? `<tfoot><tr><td colspan="3"><b>TOTAL EGRESOS (${egresos.length})</b></td><td class="right">${money(totalEgresos)}</td></tr></tfoot>` : ''}
-    </table>
-  </div>
-  <div class="section">
-    <div class="section-title">Resumen Financiero del Día</div>
-    <div class="summary-grid">
-      <div class="summary-card efectivo"><div class="summary-label">Ventas Efectivo</div><div class="summary-value">${money(totalEfectivo)}</div></div>
-      <div class="summary-card yape"><div class="summary-label">Ventas Yape</div><div class="summary-value">${money(totalYape)}</div></div>
-      <div class="summary-card fiado"><div class="summary-label">Ventas Fiado</div><div class="summary-value">${money(totalFiado)}</div></div>
-    </div>
-    <div class="total-card"><span class="total-label">TOTAL VENDIDO (Efectivo + Yape + Fiado)</span><span class="total-value">${money(totalGeneral)}</span></div>
-    <div class="summary-grid dos">
-      <div class="summary-card cobro"><div class="summary-label">Cobros de Deuda</div><div class="summary-value">${money(totalCobros)}</div></div>
-      <div class="summary-card egreso"><div class="summary-label">Egresos</div><div class="summary-value">- ${money(totalEgresos)}</div></div>
-    </div>
-    <div class="balance-card">
-      <div class="balance-desc">Efectivo esperado: <b>${money(esperadoEfectivo)}</b> &nbsp;·&nbsp; Contado: <b>${money(toNum(montoRealContado))}</b> &nbsp;·&nbsp; <b>${diferencia >= 0 ? 'Sobrante' : 'Faltante'}</b></div>
-      <div class="balance-value">${diferencia >= 0 ? '+' : ''}${money(diferencia)}</div>
-    </div>
-    <div class="neto-card">
-      <div class="neto-label">BALANCE FINAL NETO<br/><span style="font-weight:500;font-size:7.5pt;">(Fondo inicial + Ventas directas + Cobros de deuda) − Egresos</span></div>
-      <div class="neto-value">${money(balanceNeto)}</div>
-    </div>
-  </div>
-  <div class="footer">${escaparHtml(negocio.nombre)} &nbsp;·&nbsp; Reporte generado el ${fechaHora(ahora)} &nbsp;·&nbsp; Documento de uso interno</div>
-</body>
-</html>`
-
-    w.document.open()
-    w.document.write(html)
-    w.document.close()
-    w.focus()
-    // Cierra la ventana del reporte cuando el usuario termina con el dialogo
-    // de impresion (no antes: cerrarla justo tras llamar a print() deja la
-    // vista previa en blanco, porque el navegador aun esta renderizando).
-    w.addEventListener('afterprint', () => w.close())
-    setTimeout(() => { w.print() }, 600)
-  } catch (err) {
-    w.close()
-    throw err
-  }
+  // Descarga directa: sin popup (que el navegador podia bloquear) ni dialogo de impresion.
+  doc.save(nombreArchivoCierre(cajaData.cajero_nombre, ymd(new Date(cierre))))
 }
 
 // ─── Componente principal ─────────────────────────────────────────────────────

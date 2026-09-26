@@ -28,6 +28,7 @@ import {
   cx,
 } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
+import { admiteVuelto, lineasPago, metodoParaQr, montoPorMetodo, textoPagos } from '@/utils/pagos'
 import { etiquetaModalidad } from '@/utils/presentaciones'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
@@ -70,6 +71,7 @@ const TONO_PAGO: Record<MetodoPago, 'neutral' | 'success' | 'info' | 'warning'> 
   efectivo: 'success',
   yape: 'info',
   fiado: 'warning',
+  mixto: 'neutral',
 }
 
 export function Ventas() {
@@ -207,16 +209,21 @@ export function Ventas() {
       ...resumenPorDia.map((r) => [fechaCorta(`${r.dia}T00:00:00`), r.count, r.anuladas, r.total.toFixed(2)]),
       [],
       ['DETALLE DE VENTAS'],
-      ['Comprobante', 'Fecha', 'Hora', 'Cajero', 'Metodo', 'Cliente', 'Total', 'Anulada'],
+      // Las 3 ultimas columnas reparten el total por metodo (una venta mixta
+      // aparece con su parte en efectivo y su parte en yape).
+      ['Comprobante', 'Fecha', 'Hora', 'Cajero', 'Metodo', 'Cliente', 'Total', 'Anulada', 'Monto efectivo', 'Monto yape', 'Monto fiado'],
       ...filtradas.map((v) => [
         v.numero,
         fechaCorta(v.creado_en),
         horaCorta(v.creado_en),
         v.cajero_nombre ?? '',
-        ETIQUETA_PAGO[v.metodo] ?? v.metodo,
+        textoPagos(v, (m) => ETIQUETA_PAGO[m] ?? m, (n) => n.toFixed(2)),
         v.cliente_nombre ?? '',
         Number(v.total).toFixed(2),
         v.anulada ? 'Si' : 'No',
+        montoPorMetodo([v], 'efectivo').toFixed(2),
+        montoPorMetodo([v], 'yape').toFixed(2),
+        montoPorMetodo([v], 'fiado').toFixed(2),
       ]),
     ]
     descargarCSV(`ventas_${desde}_a_${hasta}.csv`, filas)
@@ -729,6 +736,7 @@ function TicketReprint({
       metodo: venta.metodo,
       pagoRecibido: Number(venta.pago_recibido),
       vuelto: Number(venta.vuelto),
+      pagos: venta.pagos ?? null,
       clienteNombre: venta.cliente_nombre,
       anulada: venta.anulada,
     }
@@ -739,7 +747,7 @@ function TicketReprint({
     const t = datosTicket()
     if (!t) return
     try {
-      const { qr, fallo } = await qrParaTicket(t.datos.metodo, t.datos.anulada)
+      const { qr, fallo } = await qrParaTicket(metodoParaQr(t.datos.metodo, t.datos.pagos), t.datos.anulada)
       if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
       imprimirTicketHtml(construirTicketHtml(t.datos, t.lineas, qr))
     } catch (e) {
@@ -758,7 +766,7 @@ function TicketReprint({
     }
     setImprimiendoBt(true)
     try {
-      const { qr, fallo } = await qrParaTicket(t.datos.metodo, t.datos.anulada)
+      const { qr, fallo } = await qrParaTicket(metodoParaQr(t.datos.metodo, t.datos.pagos), t.datos.anulada)
       if (fallo) toast.info('No se pudo cargar el QR de Yape: el ticket se imprime sin QR.')
       await imprimirPorBluetooth(construirTicketEscPos(t.datos, t.lineas, qr))
       toast.exito('Ticket enviado a la impresora Bluetooth')
@@ -861,8 +869,20 @@ function TicketReprint({
             <span>TOTAL</span>
             <span className="tabular">{money(Number(venta.total))}</span>
           </div>
-          <Fila k={ETIQUETA_PAGO[venta.metodo]} v={money(Number(venta.pago_recibido))} />
-          {Number(venta.vuelto) > 0 && <Fila k="Vuelto" v={money(Number(venta.vuelto))} />}
+          {lineasPago(
+            {
+              metodo: venta.metodo,
+              pagoRecibido: Number(venta.pago_recibido),
+              vuelto: Number(venta.vuelto),
+              pagos: venta.pagos,
+            },
+            (m) => ETIQUETA_PAGO[m] ?? m,
+          ).map((l) => (
+            <Fila key={l.etiqueta} k={l.etiqueta} v={money(l.monto)} />
+          ))}
+          {admiteVuelto(venta.metodo) && Number(venta.vuelto) > 0 && (
+            <Fila k="Vuelto" v={money(Number(venta.vuelto))} />
+          )}
         </div>
         <p className="mt-3 text-center text-xs text-ink-400">¡Gracias por su compra!</p>
       </div>

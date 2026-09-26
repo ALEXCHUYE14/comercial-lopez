@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Banknote, Smartphone, HandCoins, Check, Search } from 'lucide-react'
+import { Banknote, Smartphone, HandCoins, Check, Search, ArrowLeftRight } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { money, cx } from '@/utils/format'
+import { armarPagoMixto, redondear2 } from '@/utils/pagos'
 import { useNegocio } from '@/config/negocio'
-import type { ClienteCredito, MetodoPago } from '@/types/database'
+import type { ClienteCredito, MetodoPago, PagoVenta } from '@/types/database'
 
 interface Props {
   open: boolean
@@ -12,9 +13,17 @@ interface Props {
   total: number
   procesando: boolean
   clientes: ClienteCredito[]
-  onConfirmar: (metodo: MetodoPago, pagoRecibido: number, clienteId?: string) => void
+  /** `pagos` solo viene con metodo 'mixto' (efectivo + yape); en ese caso
+   * `pagoRecibido` = efectivo entregado + yape. */
+  onConfirmar: (
+    metodo: MetodoPago,
+    pagoRecibido: number,
+    clienteId?: string,
+    pagos?: PagoVenta[],
+  ) => void
   /** Sin conexión: oculta "Fiado" (requiere validar el límite de crédito
-   * actualizado en el servidor, ver hooks/useVentasOffline.ts). */
+   * actualizado en el servidor, ver hooks/useVentasOffline.ts) y "Mixto"
+   * (se valida en el servidor y no entra a la cola offline). */
   offline?: boolean
 }
 
@@ -22,6 +31,7 @@ const METODOS: { id: MetodoPago; label: string; icon: typeof Banknote; desc: str
   { id: 'efectivo', label: 'Efectivo', icon: Banknote, desc: 'Pago con billetes/monedas' },
   { id: 'yape', label: 'Yape', icon: Smartphone, desc: 'Transferencia instantánea' },
   { id: 'fiado', label: 'Fiado', icon: HandCoins, desc: 'Apuntar a cuenta del cliente' },
+  { id: 'mixto', label: 'Mixto', icon: ArrowLeftRight, desc: 'Parte en efectivo, parte en Yape' },
 ]
 
 const RAPIDOS = [10, 20, 50, 100, 200]
@@ -31,13 +41,17 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
   const [recibido, setRecibido] = useState('')
   const [busqCliente, setBusqCliente] = useState('')
   const [clienteId, setClienteId] = useState<string | null>(null)
+  // Pago mixto: cuanto de la venta paga en efectivo (el yape es el resto) y,
+  // opcional, cuanto efectivo entrega para calcular el vuelto.
+  const [efectivoParte, setEfectivoParte] = useState('')
+  const [efectivoEntregado, setEfectivoEntregado] = useState('')
   const { yapeQrUrl } = useNegocio()
   // URL cuyo QR fallo al cargar (sin internet, archivo borrado): se oculta la
   // imagen rota y el cobro sigue funcionando igual, sin QR en pantalla.
   const [qrRoto, setQrRoto] = useState<string | null>(null)
 
   const metodosDisponibles = useMemo(
-    () => (offline ? METODOS.filter((m) => m.id !== 'fiado') : METODOS),
+    () => (offline ? METODOS.filter((m) => m.id !== 'fiado' && m.id !== 'mixto') : METODOS),
     [offline],
   )
 
@@ -45,7 +59,7 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
   // de inmediato — sin esto, el boton de confirmar quedaria mostrando un
   // metodo que ya no aparece en la lista de arriba.
   useEffect(() => {
-    if (offline && metodo === 'fiado') {
+    if (offline && (metodo === 'fiado' || metodo === 'mixto')) {
       setMetodo('efectivo')
       setClienteId(null)
     }
@@ -53,6 +67,7 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
 
   const esEfectivo = metodo === 'efectivo'
   const esFiado = metodo === 'fiado'
+  const esMixto = metodo === 'mixto'
   const pago = parseFloat(recibido) || 0
   const vuelto = useMemo(() => Math.max(pago - total, 0), [pago, total])
   const suficienteEfectivo = pago >= total
@@ -65,10 +80,23 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
   const superaLimite = esFiado && clienteSeleccionado && total > creditoDisponible
   const sinCliente = esFiado && !clienteSeleccionado
 
+  // Pago mixto: la validacion (partes > 0, suma exacta, efectivo alcanza)
+  // vive en armarPagoMixto — la misma funcion que arma lo que se envia.
+  const mixto = useMemo(
+    () =>
+      armarPagoMixto(
+        total,
+        parseFloat(efectivoParte),
+        efectivoEntregado.trim() === '' ? undefined : parseFloat(efectivoEntregado),
+      ),
+    [total, efectivoParte, efectivoEntregado],
+  )
+
   const puedeConfirmar =
     !sinCliente &&
     !superaLimite &&
-    (!esEfectivo || suficienteEfectivo)
+    (!esEfectivo || suficienteEfectivo) &&
+    (!esMixto || mixto.ok)
 
   const clientesFiltrados = useMemo(() => {
     const q = busqCliente.trim().toLowerCase()
@@ -87,6 +115,11 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
   }
 
   function confirmar() {
+    if (esMixto) {
+      if (!mixto.ok) return
+      onConfirmar('mixto', mixto.pagoRecibido, undefined, mixto.pagos)
+      return
+    }
     const pagoFinal = esEfectivo ? pago : total
     onConfirmar(metodo, pagoFinal, esFiado ? clienteId ?? undefined : undefined)
   }
@@ -96,6 +129,8 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
     setRecibido('')
     setBusqCliente('')
     setClienteId(null)
+    setEfectivoParte('')
+    setEfectivoEntregado('')
   }
 
   function handleClose() {
@@ -140,13 +175,19 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
               Sin conexión: "Fiado" no está disponible, se sincronizará cuando vuelva internet.
             </p>
           )}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             {metodosDisponibles.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
-                onClick={() => { setMetodo(id); setClienteId(null); setRecibido('') }}
+                onClick={() => {
+                  setMetodo(id)
+                  setClienteId(null)
+                  setRecibido('')
+                  setEfectivoParte('')
+                  setEfectivoEntregado('')
+                }}
                 className={cx(
-                  'flex flex-col items-center gap-1.5 rounded-xl border px-3 py-3 text-xs font-semibold transition focusable',
+                  'flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-xs font-semibold transition focusable',
                   metodo === id
                     ? 'border-accent-500 bg-accent-50 text-accent-700'
                     : 'border-ink-200 text-ink-500 hover:border-ink-300',
@@ -207,6 +248,94 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
                 >
                   {suficienteEfectivo ? money(vuelto) : 'Falta ' + money(total - pago)}
                 </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Panel: Mixto (parte en efectivo, el resto en Yape) */}
+        {esMixto && (
+          <div className="animate-fade-up space-y-3">
+            <div>
+              <p className="label mb-2">¿Cuánto paga en efectivo?</p>
+              <input
+                type="number"
+                inputMode="decimal"
+                autoFocus
+                min={0}
+                step={0.01}
+                value={efectivoParte}
+                onChange={(e) => setEfectivoParte(e.target.value)}
+                placeholder="0.00"
+                className="input tabular text-lg"
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[25, 50, 75].map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setEfectivoParte(redondear2((total * p) / 100).toFixed(2))}
+                  className="rounded-lg bg-ink-100 px-3 py-1.5 text-xs font-semibold text-ink-700 hover:bg-ink-200"
+                >
+                  {p}% efectivo
+                </button>
+              ))}
+            </div>
+            {mixto.ok ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div className="rounded-xl bg-accent-50 px-3.5 py-2.5">
+                    <p className="text-xs text-accent-700">Efectivo</p>
+                    <p className="tabular font-display text-lg font-bold text-accent-700">
+                      {money(mixto.efectivo)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl bg-blue-50 px-3.5 py-2.5">
+                    <p className="text-xs text-blue-700">Yape (el resto)</p>
+                    <p className="tabular font-display text-lg font-bold text-blue-700">
+                      {money(mixto.yape)}
+                    </p>
+                  </div>
+                </div>
+                <div>
+                  <p className="label mb-1.5">Efectivo que entrega (opcional, para el vuelto)</p>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={0.01}
+                    value={efectivoEntregado}
+                    onChange={(e) => setEfectivoEntregado(e.target.value)}
+                    placeholder={mixto.efectivo.toFixed(2)}
+                    className="input tabular"
+                  />
+                </div>
+                {mixto.vuelto > 0 && (
+                  <div className="flex items-center justify-between rounded-xl bg-accent-50 px-4 py-3">
+                    <span className="text-sm font-medium text-ink-600">Vuelto</span>
+                    <span className="tabular font-display text-xl font-bold text-accent-700">
+                      {money(mixto.vuelto)}
+                    </span>
+                  </div>
+                )}
+                <p className="text-xs text-blue-500">
+                  Confirma que el cliente ya envió los {money(mixto.yape)} por Yape antes de procesar.
+                </p>
+              </div>
+            ) : (
+              efectivoParte.trim() !== '' && (
+                <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">{mixto.error}</div>
+              )
+            )}
+            {yapeQrUrl && qrRoto !== yapeQrUrl && mixto.ok && (
+              <div className="flex flex-col items-center gap-1.5">
+                <img
+                  src={yapeQrUrl}
+                  alt="Código QR de Yape del negocio"
+                  className="size-44 max-w-full rounded-xl border border-blue-100 bg-white object-contain p-2"
+                  onError={() => setQrRoto(yapeQrUrl)}
+                />
+                <p className="text-xs text-blue-500">El cliente escanea este código con Yape</p>
               </div>
             )}
           </div>
