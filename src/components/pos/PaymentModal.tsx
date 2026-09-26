@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Banknote, Smartphone, HandCoins, Check, Search, ArrowLeftRight } from 'lucide-react'
+import { Banknote, Smartphone, HandCoins, Check, Search, ArrowLeftRight, UserPlus } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { money, cx } from '@/utils/format'
 import { armarPagoMixto, redondear2 } from '@/utils/pagos'
+import { LIMITE_CREDITO_CAJERO } from '@/hooks/useClientes'
 import { useNegocio } from '@/config/negocio'
 import type { ClienteCredito, MetodoPago, PagoVenta } from '@/types/database'
 
@@ -21,6 +22,13 @@ interface Props {
     clienteId?: string,
     pagos?: PagoVenta[],
   ) => void
+  /** Alta rápida de un cliente nuevo sin salir del cobro (ver
+   * useClientes.crearParaFiado). Si no se pasa, se muestra el aviso de ir a
+   * Clientes como antes. */
+  onCrearCliente?: (datos: { nombre: string; telefono: string; limite: number }) => Promise<ClienteCredito>
+  /** true = puede fijar el límite de crédito del cliente nuevo (administrador);
+   * false = queda con el límite inicial (LIMITE_CREDITO_CAJERO). */
+  puedeFijarLimite?: boolean
   /** Sin conexión: oculta "Fiado" (requiere validar el límite de crédito
    * actualizado en el servidor, ver hooks/useVentasOffline.ts) y "Mixto"
    * (se valida en el servidor y no entra a la cola offline). */
@@ -36,7 +44,17 @@ const METODOS: { id: MetodoPago; label: string; icon: typeof Banknote; desc: str
 
 const RAPIDOS = [10, 20, 50, 100, 200]
 
-export function PaymentModal({ open, onClose, total, procesando, clientes, onConfirmar, offline }: Props) {
+export function PaymentModal({
+  open,
+  onClose,
+  total,
+  procesando,
+  clientes,
+  onConfirmar,
+  offline,
+  onCrearCliente,
+  puedeFijarLimite = false,
+}: Props) {
   const [metodo, setMetodo] = useState<MetodoPago>('efectivo')
   const [recibido, setRecibido] = useState('')
   const [busqCliente, setBusqCliente] = useState('')
@@ -45,6 +63,11 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
   // opcional, cuanto efectivo entrega para calcular el vuelto.
   const [efectivoParte, setEfectivoParte] = useState('')
   const [efectivoEntregado, setEfectivoEntregado] = useState('')
+  // Alta rapida de cliente para fiado (sin salir del cobro).
+  const [nuevoAbierto, setNuevoAbierto] = useState(false)
+  const [nuevo, setNuevo] = useState({ nombre: '', telefono: '', limite: String(LIMITE_CREDITO_CAJERO) })
+  const [creando, setCreando] = useState(false)
+  const [errorNuevo, setErrorNuevo] = useState<string | null>(null)
   const { yapeQrUrl } = useNegocio()
   // URL cuyo QR fallo al cargar (sin internet, archivo borrado): se oculta la
   // imagen rota y el cobro sigue funcionando igual, sin QR en pantalla.
@@ -109,6 +132,40 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
       : clientes
   }, [clientes, busqCliente])
 
+  function abrirNuevo() {
+    // Si ya escribio un nombre en el buscador, se aprovecha como nombre nuevo.
+    setNuevo({ nombre: busqCliente.trim(), telefono: '', limite: String(LIMITE_CREDITO_CAJERO) })
+    setErrorNuevo(null)
+    setNuevoAbierto(true)
+  }
+
+  async function crearCliente() {
+    if (!onCrearCliente || creando) return
+    const nombre = nuevo.nombre.trim()
+    if (nombre.length < 2) {
+      setErrorNuevo('Escribe el nombre del cliente (mínimo 2 letras).')
+      return
+    }
+    const limite = puedeFijarLimite ? parseFloat(nuevo.limite) : LIMITE_CREDITO_CAJERO
+    if (!Number.isFinite(limite) || limite < 0) {
+      setErrorNuevo('El límite de crédito no es válido.')
+      return
+    }
+    setCreando(true)
+    setErrorNuevo(null)
+    try {
+      const cliente = await onCrearCliente({ nombre, telefono: nuevo.telefono, limite })
+      // Queda seleccionado de inmediato: el cobro al fiado sigue sin interrupciones.
+      setClienteId(cliente.id)
+      setBusqCliente('')
+      setNuevoAbierto(false)
+    } catch (e) {
+      setErrorNuevo(e instanceof Error ? e.message : 'No se pudo registrar al cliente.')
+    } finally {
+      setCreando(false)
+    }
+  }
+
   function seleccionar(id: string) {
     setClienteId(id)
     setBusqCliente('')
@@ -131,6 +188,8 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
     setClienteId(null)
     setEfectivoParte('')
     setEfectivoEntregado('')
+    setNuevoAbierto(false)
+    setErrorNuevo(null)
   }
 
   function handleClose() {
@@ -185,6 +244,8 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
                   setRecibido('')
                   setEfectivoParte('')
                   setEfectivoEntregado('')
+                  setNuevoAbierto(false)
+                  setErrorNuevo(null)
                 }}
                 className={cx(
                   'flex flex-col items-center gap-1.5 rounded-xl border px-2 py-3 text-xs font-semibold transition focusable',
@@ -366,10 +427,83 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
         {/* Panel: Fiado */}
         {esFiado && (
           <div className="animate-fade-up space-y-3">
-            {clientes.length === 0 ? (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                No hay clientes con fiado registrados. Ve a{' '}
-                <strong>Clientes</strong> para registrar uno.
+            {nuevoAbierto ? (
+              <div className="space-y-3 rounded-xl border border-ink-200 bg-ink-50 p-3.5">
+                <p className="text-sm font-semibold text-ink-800">Registrar cliente nuevo</p>
+                <label className="block">
+                  <span className="label mb-1 block">Nombre *</span>
+                  <input
+                    className="input"
+                    autoFocus
+                    maxLength={80}
+                    value={nuevo.nombre}
+                    onChange={(e) => setNuevo((p) => ({ ...p, nombre: e.target.value }))}
+                    placeholder="Ej. Rosa Mendoza"
+                  />
+                </label>
+                <label className="block">
+                  <span className="label mb-1 block">Teléfono (opcional)</span>
+                  <input
+                    className="input"
+                    inputMode="tel"
+                    maxLength={20}
+                    value={nuevo.telefono}
+                    onChange={(e) => setNuevo((p) => ({ ...p, telefono: e.target.value }))}
+                    placeholder="987 654 321"
+                  />
+                </label>
+                {puedeFijarLimite ? (
+                  <label className="block">
+                    <span className="label mb-1 block">Límite de crédito (S/)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step={0.01}
+                      className="input tabular"
+                      value={nuevo.limite}
+                      onChange={(e) => setNuevo((p) => ({ ...p, limite: e.target.value }))}
+                    />
+                  </label>
+                ) : (
+                  <p className="rounded-lg bg-white px-3 py-2 text-xs text-ink-500">
+                    Límite de crédito inicial: <b className="text-ink-800">{money(LIMITE_CREDITO_CAJERO)}</b>. Un
+                    administrador puede ampliarlo después en Clientes.
+                  </p>
+                )}
+                {(() => {
+                  const limite = puedeFijarLimite ? parseFloat(nuevo.limite) : LIMITE_CREDITO_CAJERO
+                  return Number.isFinite(limite) && limite < total ? (
+                    <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                      Este cobro es de {money(total)} y el límite es {money(limite)}: con ese límite no se podrá
+                      apuntar al fiado.
+                    </p>
+                  ) : null
+                })()}
+                {errorNuevo && (
+                  <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{errorNuevo}</p>
+                )}
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" disabled={creando} onClick={() => setNuevoAbierto(false)}>
+                    Cancelar
+                  </Button>
+                  <Button variant="secondary" className="flex-1" loading={creando} onClick={crearCliente}>
+                    Guardar y usar
+                  </Button>
+                </div>
+              </div>
+            ) : clientes.length === 0 ? (
+              <div className="space-y-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                <p>Todavía no hay clientes con fiado registrados.</p>
+                {onCrearCliente ? (
+                  <Button variant="secondary" size="sm" onClick={abrirNuevo}>
+                    <UserPlus className="size-4" /> Registrar cliente ahora
+                  </Button>
+                ) : (
+                  <p>
+                    Ve a <strong>Clientes</strong> para registrar uno.
+                  </p>
+                )}
               </div>
             ) : clienteSeleccionado ? (
               <div className="space-y-2">
@@ -403,7 +537,18 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
               </div>
             ) : (
               <div>
-                <p className="label mb-2">Seleccionar cliente</p>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="label">Seleccionar cliente</p>
+                  {onCrearCliente && (
+                    <button
+                      type="button"
+                      onClick={abrirNuevo}
+                      className="inline-flex items-center gap-1 rounded-lg bg-accent-50 px-2.5 py-1 text-xs font-semibold text-accent-700 hover:bg-accent-100"
+                    >
+                      <UserPlus className="size-3.5" /> Cliente nuevo
+                    </button>
+                  )}
+                </div>
                 <div className="relative mb-2">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-300" />
                   <input
@@ -453,7 +598,18 @@ export function PaymentModal({ open, onClose, total, procesando, clientes, onCon
                     )
                   })}
                   {clientesFiltrados.length === 0 && (
-                    <li className="py-4 text-center text-sm text-ink-400">Sin resultados</li>
+                    <li className="px-3.5 py-4 text-center text-sm text-ink-400">
+                      Sin resultados
+                      {onCrearCliente && busqCliente.trim().length >= 2 && (
+                        <button
+                          type="button"
+                          onClick={abrirNuevo}
+                          className="mt-2 block w-full rounded-lg bg-accent-50 px-3 py-2 text-sm font-semibold text-accent-700 hover:bg-accent-100"
+                        >
+                          Registrar "{busqCliente.trim()}" como cliente nuevo
+                        </button>
+                      )}
+                    </li>
                   )}
                 </ul>
               </div>

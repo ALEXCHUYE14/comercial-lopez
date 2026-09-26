@@ -1,5 +1,6 @@
 import { useMemo, useState, useCallback } from 'react'
-import { factorModalidad, precioPresentacion, unidadesDe } from '@/utils/presentaciones'
+import { factorModalidad, modalidadValida, precioPresentacion, unidadesDe } from '@/utils/presentaciones'
+import type { LineaGuardada } from '@/utils/carritoPersistido'
 import type { ItemCarrito, ModalidadVenta, Producto } from '@/types/database'
 
 const TASA_IGV = 0.18
@@ -40,6 +41,48 @@ function reservadoPorOtras(items: ItemCarrito[], productoId: string, modalidad: 
   return items
     .filter((i) => i.producto.id === productoId && i.modalidad !== modalidad)
     .reduce((s, i) => s + unidadesDe(i), 0)
+}
+
+export interface CarritoReconstruido {
+  items: ItemCarrito[]
+  /** Líneas que no se pudieron recuperar (producto eliminado/desactivado,
+   * presentación que ya no existe o sin stock). */
+  omitidas: number
+  /** Líneas cuya cantidad se redujo porque el stock actual ya no alcanza. */
+  ajustadas: number
+}
+
+/** Reconstruye el carrito guardado contra los productos ACTUALES (precio, stock
+ * y presentaciones vigentes tras una actualización o un cambio en el
+ * inventario): nunca se restaura un producto ni un precio viejo. Reutiliza el
+ * mismo tope de stock que aplica `agregar` (incluido lo reservado por otras
+ * líneas del mismo producto), así el carrito restaurado siempre es válido.
+ * Función pura: no toca React ni el almacenamiento. */
+export function reconstruirCarrito(lineas: LineaGuardada[], productos: Producto[]): CarritoReconstruido {
+  const porId = new Map(productos.map((p) => [p.id, p]))
+  const items: ItemCarrito[] = []
+  let omitidas = 0
+  let ajustadas = 0
+  for (const l of lineas) {
+    const producto = porId.get(l.productoId)
+    if (!producto || !modalidadValida(producto, l.modalidad) || !(l.cantidad > 0)) {
+      omitidas++
+      continue
+    }
+    const idx = items.findIndex((i) => i.producto.id === producto.id && i.modalidad === l.modalidad)
+    const yaEnCarrito = idx >= 0 ? items[idx].cantidad : 0
+    const max = maxCantidad(producto, l.modalidad, reservadoPorOtras(items, producto.id, l.modalidad))
+    const deseada = yaEnCarrito + l.cantidad
+    const cantidad = Math.min(deseada, max)
+    if (!(cantidad > 0)) {
+      omitidas++
+      continue
+    }
+    if (cantidad < deseada - 1e-9) ajustadas++
+    if (idx >= 0) items[idx] = { ...items[idx], cantidad }
+    else items.push({ producto, cantidad, modalidad: l.modalidad })
+  }
+  return { items, omitidas, ajustadas }
 }
 
 export function useCarrito() {
@@ -110,6 +153,13 @@ export function useCarrito() {
     setDescuento(0)
   }, [])
 
+  // Recupera un carrito guardado (ver utils/carritoPersistido.ts). Los items
+  // deben venir de `reconstruirCarrito`, ya validados contra el stock actual.
+  const restaurar = useCallback((nuevos: ItemCarrito[], desc: number) => {
+    setItems(nuevos)
+    setDescuento(Number.isFinite(desc) && desc > 0 ? desc : 0)
+  }, [])
+
   const totales = useMemo(() => {
     const subtotal = items.reduce(
       (s, i) => s + precioItem(i) * i.cantidad,
@@ -137,6 +187,7 @@ export function useCarrito() {
     cambiarCantidad,
     quitar,
     limpiar,
+    restaurar,
     totales,
     vacio: items.length === 0,
   }

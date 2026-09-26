@@ -6,6 +6,12 @@ import type { ClienteCredito, MetodoAbono, PagoCredito } from '@/types/database'
 // considera "vencida" la deuda de un cliente (usado para alertas).
 export const DIAS_DEUDA_VENCIDA = 15
 
+// Limite de credito con el que un cajero/supervisor puede dar de alta a un
+// cliente desde el cobro (el administrador fija el que quiera). Debe coincidir
+// con v_limite_max_cajero del RPC registrar_cliente_fiado en schema.sql: el
+// servidor es quien lo aplica; este valor solo se muestra en pantalla.
+export const LIMITE_CREDITO_CAJERO = 100
+
 // Para cada cliente con deuda, calcula la fecha de su ultimo movimiento de
 // credito (el pago mas reciente o la venta al fiado mas reciente, lo que sea
 // mas nuevo) y devuelve cuantos dias han pasado desde entonces.
@@ -86,6 +92,29 @@ export function useClientes() {
     return data
   }
 
+  // Alta rapida desde el cobro (RPC registrar_cliente_fiado): a diferencia de
+  // `crear` (escritura directa, solo administrador por RLS), la puede usar
+  // cualquier usuario activo, con el limite de credito topado para no
+  // administradores y sin permitir duplicados — todo validado en el servidor.
+  async function crearParaFiado(d: {
+    nombre: string
+    telefono: string
+    limite: number
+  }): Promise<ClienteCredito> {
+    const { data, error } = await supabase.rpc('registrar_cliente_fiado', {
+      p_nombre: d.nombre,
+      p_telefono: d.telefono.trim() || null,
+      p_direccion: null,
+      p_limite: d.limite,
+    })
+    if (error) throw new Error(error.message)
+    const cliente = data as unknown as ClienteCredito
+    setClientes((prev) =>
+      [...prev.filter((x) => x.id !== cliente.id), cliente].sort((a, b) => a.nombre.localeCompare(b.nombre)),
+    )
+    return cliente
+  }
+
   async function actualizar(
     id: string,
     c: Pick<ClienteCredito, 'nombre' | 'telefono' | 'direccion' | 'limite_credito'>,
@@ -161,6 +190,7 @@ export function useClientes() {
     cargando,
     cargar,
     crear,
+    crearParaFiado,
     actualizar,
     eliminar,
     registrarAbono,

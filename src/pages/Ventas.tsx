@@ -9,6 +9,7 @@ import {
   Ban,
   ChevronDown,
   Download,
+  Pencil,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { getNegocio, useNegocio, textoDocumento } from '@/config/negocio'
@@ -16,6 +17,7 @@ import { useAuth } from '@/context/AuthContext'
 import { useCajaCtx } from '@/context/CajaContext'
 import { Card, Badge, Button, Spinner } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
+import { CambiarProductoVenta } from '@/components/ventas/CambiarProductoVenta'
 import { useToast } from '@/components/ui/Toast'
 import {
   money,
@@ -128,6 +130,15 @@ export function Ventas() {
   useEffect(() => {
     cargar()
   }, [cargar])
+
+  const puedeGestionar =
+    !!ticket &&
+    !ticket.anulada &&
+    (esAdmin ||
+      (!!perfil &&
+        ticket.cajero_id === perfil.id &&
+        !!ticket.caja_id &&
+        ticket.caja_id === caja?.id))
 
   const filtradas = useMemo(() => {
     const t = q.trim().toLowerCase()
@@ -623,25 +634,24 @@ export function Ventas() {
       {/* Reimpresion de ticket */}
       <TicketReprint
         venta={ticket}
-        // El admin puede anular cualquier venta; el resto solo la suya y con
-        // su caja abierta (misma regla que aplica el RPC anular_venta, que es
-        // quien realmente decide — esto solo evita mostrar un boton que el
-        // servidor rechazaria).
-        puedeAnular={
-          !!ticket &&
-          !ticket.anulada &&
-          (esAdmin ||
-            (!!perfil &&
-              ticket.cajero_id === perfil.id &&
-              !!ticket.caja_id &&
-              ticket.caja_id === caja?.id))
-        }
+        // El admin puede anular / modificar cualquier venta; el resto solo la
+        // suya y con su caja abierta (misma regla que aplican los RPC
+        // anular_venta y modificar_venta, que son quienes realmente deciden —
+        // esto solo evita mostrar un boton que el servidor rechazaria).
+        puedeAnular={puedeGestionar}
+        puedeModificar={puedeGestionar}
         onClose={() => setTicket(null)}
         onAnulada={() => {
           setTicket(null)
           cargar()
           // La anulacion tambien resta el total de la caja abierta: se
           // recarga para que el resumen en pantalla refleje el nuevo monto.
+          recargarCaja()
+        }}
+        // Corregir una venta tambien mueve la caja (por la diferencia de total).
+        onModificada={() => {
+          setTicket(null)
+          cargar()
           recargarCaja()
         }}
       />
@@ -665,19 +675,24 @@ function etiquetaDetalle(d: DetalleVenta): string | undefined {
 function TicketReprint({
   venta,
   puedeAnular,
+  puedeModificar,
   onClose,
   onAnulada,
+  onModificada,
 }: {
   venta: Venta | null
   puedeAnular: boolean
+  puedeModificar: boolean
   onClose: () => void
   onAnulada: () => void
+  onModificada: () => void
 }) {
   const toast = useToast()
   const negocio = useNegocio()
   const [detalle, setDetalle] = useState<DetalleVenta[]>([])
   const [cargando, setCargando] = useState(false)
   const [anulando, setAnulando] = useState(false)
+  const [editando, setEditando] = useState(false)
   const [imprimiendoBt, setImprimiendoBt] = useState(false)
 
   useEffect(() => {
@@ -806,6 +821,16 @@ function TicketReprint({
             </Button>
           </div>
           <div className="flex gap-2">
+            {puedeModificar && !venta.anulada && (
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => setEditando(true)}
+                disabled={cargando || detalle.length === 0}
+              >
+                <Pencil className="size-4" /> Cambiar producto
+              </Button>
+            )}
             {puedeAnular && !venta.anulada && (
               <Button variant="danger" className="flex-1" onClick={anular} loading={anulando}>
                 <Ban className="size-4" /> Anular
@@ -823,7 +848,22 @@ function TicketReprint({
           Comprobante #{venta.numero}
         </p>
         {venta.anulada && <Badge tone="danger">Anulada</Badge>}
+        {venta.modificada_en && !venta.anulada && (
+          <p className="text-xs text-amber-600">Corregido el {fechaHora(venta.modificada_en)}</p>
+        )}
       </div>
+
+      {editando && (
+        <CambiarProductoVenta
+          venta={venta}
+          detalle={detalle}
+          onClose={() => setEditando(false)}
+          onGuardada={() => {
+            setEditando(false)
+            onModificada()
+          }}
+        />
+      )}
 
       <div className="rounded-xl border border-dashed border-ink-200 p-4 font-sans text-sm">
         <div className="mb-3 text-center">

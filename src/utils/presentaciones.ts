@@ -318,3 +318,29 @@ export function opcionesVenta(producto: Producto): OpcionVenta[] {
   }
   return opciones
 }
+
+/** ¿Esta modalidad todavía se puede vender con la configuración ACTUAL del
+ * producto? Mismas condiciones con las que `opcionesVenta` la ofrece: 'unidad'
+ * siempre; 'caja'/'saco' solo si el producto los tiene configurados; el resto,
+ * solo si sigue siendo una presentación adicional vigente. Sirve para no
+ * restaurar un carrito ni armar una edición de venta con una presentación que
+ * el negocio quitó (el servidor la rechazaría). */
+export function modalidadValida(producto: Producto, modalidad: ModalidadVenta): boolean {
+  if (modalidad === 'unidad') return true
+  if (modalidad === 'caja') {
+    return producto.tipo_venta !== 'granel' && !!producto.tiene_caja && (producto.unidades_por_caja ?? 0) > 0
+  }
+  if (modalidad === 'saco') {
+    return producto.tipo_venta === 'granel' && !!producto.tiene_saco && (producto.kg_por_saco ?? 0) > 0
+  }
+  return presentacionesDe(producto).some((p) => p.clave === modalidad)
+}
+
+/** Precio unitario de una modalidad (misma regla que aplica el servidor al
+ * cobrar): caja/saco con su precio propio, presentaciones adicionales con el
+ * suyo, y el precio base para la venta suelta. */
+export function precioModalidad(producto: Producto, modalidad: ModalidadVenta): number {
+  if (modalidad === 'caja') return producto.precio_venta_caja ?? producto.precio_venta
+  if (modalidad === 'saco') return producto.precio_venta_saco ?? producto.precio_venta
+  return precioPresentacion(producto, modalidad)
+}

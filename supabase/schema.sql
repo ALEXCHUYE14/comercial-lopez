@@ -1182,6 +1182,463 @@ end;
 $$;
 
 -- ----------------------------------------------------------------------------
+-- RPC 3b: MODIFICAR VENTA (cambiar el producto de una venta ya registrada)
+-- ----------------------------------------------------------------------------
+-- Antes, si el cliente cambiaba de opinion, habia que anular la venta y volver
+-- a cobrarla (comprobante nuevo, cobro nuevo). Ahora la MISMA venta (mismo
+-- numero de comprobante) se corrige: se reemplazan sus lineas por las nuevas.
+--
+-- Quien puede: igual que anular_venta — el administrador cualquier venta;
+-- cajero/supervisor solo la suya y con su caja aun abierta.
+--
+-- Todo en UNA transaccion (si algo falla, la venta queda exactamente como
+-- estaba: stock, caja, deuda y detalle):
+--   1) Devuelve al stock las unidades de las lineas actuales (kardex 'devolucion').
+--   2) Aplica las lineas nuevas: precio y unidades a descontar los calcula el
+--      SERVIDOR (linea_venta), nunca el navegador; valida stock (ya con lo
+--      devuelto) y deja el kardex 'venta'.
+--   3) Recalcula subtotal / IGV / total. El descuento original se conserva
+--      (recortado si el nuevo subtotal ya no lo alcanza).
+--   4) Ajusta lo cobrado por la DIFERENCIA (nuevo total - total anterior):
+--        efectivo -> mas/menos efectivo recibido (el vuelto no cambia);
+--        yape / otros -> el total nuevo;
+--        fiado  -> deuda del cliente (con validacion del limite si sube);
+--        mixto  -> exige indicar como se reparte el nuevo total (p_pagos).
+--      La caja se ajusta SOLO si sigue abierta (un cierre ya firmado no se toca).
+--   5) Deja constancia en ventas_modificaciones (quien, cuando, antes/despues).
+alter table public.ventas add column if not exists modificada_por uuid;
+alter table public.ventas add column if not exists modificada_en  timestamptz;
+
+create table if not exists public.ventas_modificaciones (
+  id                uuid primary key default gen_random_uuid(),
+  venta_id          uuid not null references public.ventas(id) on delete cascade,
+  usuario_id        uuid,
+  usuario_nombre    text,
+  motivo            text,
+  total_anterior    numeric(10,2) not null,
+  total_nuevo       numeric(10,2) not null,
+  diferencia        numeric(10,2) not null,
+  detalle_anterior  jsonb not null,
+  detalle_nuevo     jsonb not null,
+  creado_en         timestamptz not null default now()
+);
+create index if not exists idx_ventas_modif_venta on public.ventas_modificaciones (venta_id);
+
+alter table public.ventas_modificaciones enable row level security;
+drop policy if exists ventas_modif_select on public.ventas_modificaciones;
+create policy ventas_modif_select on public.ventas_modificaciones for select
+  to authenticated using (public.es_supervisor_o_admin());
+
+-- Calcula UNA linea de venta: unidades base a descontar y precio unitario.
+-- Misma regla que usa registrar_venta (caja / saco / presentaciones adicionales
+-- / venta suelta); se mantiene como funcion aparte para no tocar el RPC de
+-- venta que ya esta en produccion. Si cambia una regla, cambiarla en ambos.
+create or replace function public.linea_venta(
+  p_prod      public.productos,
+  p_modalidad text,
+  p_cantidad  numeric
+)
+returns table (unidades numeric, precio numeric, nombre_pres text)
+language plpgsql
+stable
+as $$
+declare
+  v_mod    text := coalesce(p_modalidad, 'unidad');
+  v_factor numeric;
+begin
+  if p_cantidad is null or p_cantidad <= 0 then
+    raise exception 'Cantidad invalida para "%".', p_prod.nombre;
+  end if;
+  nombre_pres := null;
+  if v_mod = 'caja' then
+    unidades := p_cantidad * coalesce(p_prod.unidades_por_caja, 1);
+    precio   := coalesce(p_prod.precio_venta_caja, p_prod.precio_venta);
+  elsif v_mod = 'saco' then
+    unidades := p_cantidad * coalesce(p_prod.kg_por_saco, 1);
+    precio   := coalesce(p_prod.precio_venta_saco, p_prod.precio_venta);
+  elsif v_mod = 'unidad' then
+    unidades := p_cantidad;
+    precio   := p_prod.precio_venta;
+  else
+    select f.factor, f.precio, f.nombre into v_factor, precio, nombre_pres
+      from public.presentacion_producto(p_prod.presentaciones, v_mod, p_prod.nombre) f;
+    unidades := p_cantidad * v_factor;
+  end if;
+  return next;
+end;
+$$;
+
+create or replace function public.modificar_venta(
+  p_venta_id uuid,
+  p_items    jsonb,               -- [{ producto_id, cantidad, modalidad }]  (las lineas NUEVAS completas)
+  p_pagos    jsonb default null,  -- solo ventas 'mixto' cuando cambia el total
+  p_motivo   text  default null
+)
+returns public.ventas
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_venta      public.ventas%rowtype;
+  v_det        record;
+  v_prod       public.productos%rowtype;
+  v_caja       public.cajas%rowtype;
+  v_cli        public.clientes_credito%rowtype;
+  v_item       jsonb;
+  v_admin      boolean;
+  v_nombre     text;
+  v_ids        uuid[];
+  v_antes      jsonb;
+  v_despues    jsonb;
+  v_cantidad   numeric;
+  v_modalidad  text;
+  v_unidades   numeric;
+  v_precio     numeric(10,2);
+  v_nom_pres   text;
+  v_sub        numeric(10,2);
+  v_subtotal   numeric(10,2) := 0;
+  v_stock_final double precision;
+  v_desc       numeric(10,2);
+  v_total      numeric(10,2);
+  v_base       numeric(10,2);
+  v_igv        numeric(10,2);
+  v_delta      numeric(10,2);
+  v_pago_rec   numeric;
+  v_vuelto     numeric;
+  v_pagos      jsonb;
+  v_d_ef       numeric := 0;
+  v_d_ye       numeric := 0;
+  v_d_fi       numeric := 0;
+  v_old_ef     numeric;
+  v_old_ye     numeric;
+  v_new_ef     numeric;
+  v_new_ye     numeric;
+  v_n_ef       integer;
+  v_n_ye       integer;
+  v_motivo_k   text;
+begin
+  if auth.uid() is null then
+    raise exception 'Sesion no valida.';
+  end if;
+  v_admin := public.es_admin();
+
+  select * into v_venta from public.ventas where id = p_venta_id for update;
+  if not found then raise exception 'Venta no encontrada.'; end if;
+  if v_venta.anulada then raise exception 'No se puede modificar una venta anulada.'; end if;
+
+  if not v_admin then
+    if v_venta.cajero_id is distinct from auth.uid() then
+      raise exception 'Solo puedes modificar tus propias ventas. Pide a un administrador que la modifique.';
+    end if;
+    if v_venta.caja_id is null then
+      raise exception 'Esta venta no esta asociada a una caja abierta. Pide a un administrador que la modifique.';
+    end if;
+    select * into v_caja from public.cajas where id = v_venta.caja_id;
+    if not found or v_caja.estado <> 'abierta' or v_caja.cajero_id is distinct from auth.uid() then
+      raise exception 'La caja de esta venta ya fue cerrada. Pide a un administrador que la modifique.';
+    end if;
+  end if;
+
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'La venta debe tener al menos un producto.';
+  end if;
+  if p_motivo is not null and char_length(btrim(p_motivo)) > 200 then
+    raise exception 'El motivo es demasiado largo (maximo 200 caracteres).';
+  end if;
+
+  select nombre into v_nombre from public.perfiles where id = auth.uid();
+  v_motivo_k := 'Cambio en venta #' || v_venta.numero;
+
+  -- Bloqueo de TODOS los productos involucrados (los actuales y los nuevos) en
+  -- orden de id, para que dos ediciones simultaneas no se crucen (deadlock).
+  select array_agg(x.id) into v_ids
+    from (
+      select producto_id as id from public.detalle_ventas
+        where venta_id = p_venta_id and producto_id is not null
+      union
+      select (e.item->>'producto_id')::uuid from jsonb_array_elements(p_items) as e(item)
+    ) x
+    where x.id is not null;
+  if v_ids is not null then
+    perform 1 from public.productos where id = any(v_ids) order by id for update;
+  end if;
+
+  select coalesce(jsonb_agg(to_jsonb(d) order by d.id), '[]'::jsonb) into v_antes
+    from public.detalle_ventas d where d.venta_id = p_venta_id;
+
+  -- 1) Devolver al stock lo que vendian las lineas actuales.
+  for v_det in select * from public.detalle_ventas where venta_id = p_venta_id
+  loop
+    if v_det.producto_id is not null then
+      update public.productos
+        set stock_actual = stock_actual + v_det.unidades
+        where id = v_det.producto_id
+        returning * into v_prod;
+      if found then
+        insert into public.movimientos_inventario (
+          producto_id, producto_nombre, tipo, cantidad,
+          stock_previo, stock_nuevo, motivo, usuario_id, usuario_nombre
+        ) values (
+          v_prod.id, v_prod.nombre, 'devolucion', v_det.unidades,
+          v_prod.stock_actual - v_det.unidades, v_prod.stock_actual,
+          v_motivo_k || ' (se devuelve la linea anterior)', auth.uid(), v_nombre
+        );
+      end if;
+    end if;
+  end loop;
+  delete from public.detalle_ventas where venta_id = p_venta_id;
+
+  -- 2) Aplicar las lineas nuevas.
+  for v_item in select * from jsonb_array_elements(p_items)
+  loop
+    select * into v_prod from public.productos
+      where id = (v_item->>'producto_id')::uuid;
+    if not found then
+      raise exception 'Producto % no existe.', v_item->>'producto_id';
+    end if;
+    v_cantidad  := (v_item->>'cantidad')::numeric;
+    v_modalidad := coalesce(v_item->>'modalidad', 'unidad');
+
+    select l.unidades, l.precio, l.nombre_pres into v_unidades, v_precio, v_nom_pres
+      from public.linea_venta(v_prod, v_modalidad, v_cantidad) l;
+
+    if v_prod.stock_actual < v_unidades then
+      raise exception 'Stock insuficiente para "%": disponible % %, solicitado %',
+        v_prod.nombre, v_prod.stock_actual, v_prod.unidad, v_unidades;
+    end if;
+
+    v_subtotal := v_subtotal + (v_precio * v_cantidad);
+    v_sub      := round(v_precio * v_cantidad, 2);
+
+    insert into public.detalle_ventas (
+      venta_id, producto_id, producto_nombre, sku, cantidad, modalidad, modalidad_nombre,
+      unidades, precio_unitario, subtotal
+    ) values (
+      p_venta_id, v_prod.id, v_prod.nombre, v_prod.sku, v_cantidad, v_modalidad, v_nom_pres,
+      v_unidades, v_precio, v_sub
+    );
+
+    update public.productos
+      set stock_actual = stock_actual - v_unidades
+      where id = v_prod.id
+      returning stock_actual into v_stock_final;
+    -- Mismo producto en dos lineas cuya suma excede el stock (ver registrar_venta).
+    if v_stock_final < -0.000001 then
+      raise exception 'Stock insuficiente para "%": las lineas combinadas superan el stock disponible.',
+        v_prod.nombre;
+    end if;
+
+    insert into public.movimientos_inventario (
+      producto_id, producto_nombre, tipo, cantidad,
+      stock_previo, stock_nuevo, motivo, usuario_id, usuario_nombre
+    ) values (
+      v_prod.id, v_prod.nombre, 'venta', -v_unidades,
+      v_prod.stock_actual, v_prod.stock_actual - v_unidades,
+      v_motivo_k, auth.uid(), v_nombre
+    );
+  end loop;
+
+  -- 3) Totales (IGV incluido en el precio, como en registrar_venta).
+  v_subtotal := round(v_subtotal, 2);
+  v_desc     := least(coalesce(v_venta.descuento, 0), v_subtotal);
+  v_total    := round(greatest(v_subtotal - v_desc, 0), 2);
+  if v_total <= 0 then
+    raise exception 'El total de la venta debe ser mayor a 0.';
+  end if;
+  v_base  := round(v_total / 1.18, 2);
+  v_igv   := round(v_total - v_base, 2);
+  v_delta := round(v_total - v_venta.total, 2);
+
+  if v_venta.metodo::text <> 'mixto'
+     and p_pagos is not null and jsonb_typeof(p_pagos) = 'array' and jsonb_array_length(p_pagos) > 0 then
+    raise exception 'El desglose de pagos solo aplica a ventas de pago mixto.';
+  end if;
+
+  -- 4) Ajuste de lo cobrado por la diferencia.
+  v_pagos    := v_venta.pagos;
+  v_pago_rec := v_venta.pago_recibido;
+  v_vuelto   := v_venta.vuelto;
+
+  if v_venta.metodo::text = 'efectivo' then
+    -- El cliente paga (o se le devuelve) solo la diferencia: lo recibido se
+    -- mueve lo mismo que el total, asi el vuelto ya entregado no cambia.
+    v_pago_rec := greatest(v_venta.pago_recibido + v_delta, v_total);
+    v_vuelto   := round(greatest(v_pago_rec - v_total, 0), 2);
+    v_d_ef     := v_delta;
+  elsif v_venta.metodo::text = 'yape' then
+    v_pago_rec := v_total; v_vuelto := 0; v_d_ye := v_delta;
+  elsif v_venta.metodo::text = 'fiado' then
+    v_pago_rec := v_total; v_vuelto := 0; v_d_fi := v_delta;
+    if v_venta.cliente_id is not null then
+      select * into v_cli from public.clientes_credito where id = v_venta.cliente_id for update;
+      if found then
+        if v_delta > 0 and (v_cli.limite_credito - v_cli.deuda_actual) < v_delta then
+          raise exception 'Limite de credito superado para "%": disponible %, hacen falta % mas.',
+            v_cli.nombre, (v_cli.limite_credito - v_cli.deuda_actual), v_delta;
+        end if;
+        update public.clientes_credito
+          set deuda_actual = greatest(deuda_actual + v_delta, 0)
+          where id = v_cli.id;
+      end if;
+    end if;
+  elsif v_venta.metodo::text = 'mixto' then
+    if v_venta.pagos is null or jsonb_typeof(v_venta.pagos) <> 'array' then
+      raise exception 'Esta venta mixta no tiene desglose de pagos. Anulala y vuelve a registrarla.';
+    end if;
+    select
+      max((e.item->>'monto')::numeric) filter (where e.item->>'metodo' = 'efectivo'),
+      max((e.item->>'monto')::numeric) filter (where e.item->>'metodo' = 'yape')
+      into v_old_ef, v_old_ye
+      from jsonb_array_elements(v_venta.pagos) as e(item);
+    v_old_ef := coalesce(v_old_ef, 0);
+    v_old_ye := coalesce(v_old_ye, 0);
+
+    if v_delta <> 0 or p_pagos is not null then
+      if p_pagos is null or jsonb_typeof(p_pagos) <> 'array' or jsonb_array_length(p_pagos) <> 2 then
+        raise exception 'El total cambio: indica como se reparte el nuevo total entre efectivo y yape.';
+      end if;
+      select
+        max((e.item->>'monto')::numeric) filter (where e.item->>'metodo' = 'efectivo'),
+        max((e.item->>'monto')::numeric) filter (where e.item->>'metodo' = 'yape'),
+        count(*) filter (where e.item->>'metodo' = 'efectivo'),
+        count(*) filter (where e.item->>'metodo' = 'yape')
+        into v_new_ef, v_new_ye, v_n_ef, v_n_ye
+        from jsonb_array_elements(p_pagos) as e(item);
+      if v_n_ef <> 1 or v_n_ye <> 1 then
+        raise exception 'El pago mixto debe tener un pago en efectivo y uno en yape (sin repetir metodo).';
+      end if;
+      if v_new_ef is null or v_new_ye is null or v_new_ef <= 0 or v_new_ye <= 0 then
+        raise exception 'En el pago mixto, efectivo y yape deben ser mayores a 0.';
+      end if;
+      v_new_ef := round(v_new_ef, 2);
+      v_new_ye := round(v_new_ye, 2);
+      if abs((v_new_ef + v_new_ye) - v_total) > 0.005 then
+        raise exception 'Los pagos (efectivo % + yape %) no suman el nuevo total (%).',
+          v_new_ef, v_new_ye, v_total;
+      end if;
+      v_pagos := jsonb_build_array(
+        jsonb_build_object('metodo', 'efectivo', 'monto', v_new_ef),
+        jsonb_build_object('metodo', 'yape',     'monto', v_new_ye)
+      );
+      v_d_ef := v_new_ef - v_old_ef;
+      v_d_ye := v_new_ye - v_old_ye;
+      v_pago_rec := v_total; v_vuelto := 0;
+    end if;
+  else
+    -- tarjeta / plin / transferencia: sin acumulado propio en caja.
+    v_pago_rec := v_total; v_vuelto := 0;
+  end if;
+
+  -- La caja solo se ajusta si sigue abierta (un cierre ya firmado no se toca).
+  if v_venta.caja_id is not null then
+    select * into v_caja from public.cajas where id = v_venta.caja_id for update;
+    if found and v_caja.estado = 'abierta' then
+      update public.cajas set
+        total_efectivo = greatest(total_efectivo + v_d_ef, 0),
+        total_yape     = greatest(total_yape     + v_d_ye, 0),
+        total_fiado    = greatest(total_fiado    + v_d_fi, 0)
+      where id = v_caja.id;
+    end if;
+  end if;
+
+  update public.ventas set
+    subtotal = v_subtotal, descuento = v_desc, igv = v_igv, total = v_total,
+    pago_recibido = v_pago_rec, vuelto = v_vuelto, pagos = v_pagos,
+    modificada_por = auth.uid(), modificada_en = now()
+  where id = p_venta_id
+  returning * into v_venta;
+
+  -- 5) Auditoria.
+  select coalesce(jsonb_agg(to_jsonb(d) order by d.id), '[]'::jsonb) into v_despues
+    from public.detalle_ventas d where d.venta_id = p_venta_id;
+  insert into public.ventas_modificaciones (
+    venta_id, usuario_id, usuario_nombre, motivo,
+    total_anterior, total_nuevo, diferencia, detalle_anterior, detalle_nuevo
+  ) values (
+    p_venta_id, auth.uid(), v_nombre, nullif(btrim(coalesce(p_motivo, '')), ''),
+    round(v_total - v_delta, 2), v_total, v_delta, v_antes, v_despues
+  );
+
+  return v_venta;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- RPC 3c: REGISTRAR CLIENTE FIADO (alta rapida desde el cobro)
+-- ----------------------------------------------------------------------------
+-- Antes, un cliente nuevo que pedia fiado obligaba a salir del cobro e ir a
+-- Clientes (solo el administrador puede crearlos por RLS). Este RPC permite dar
+-- de alta al cliente en el mismo cobro, con controles:
+--   - El administrador fija el limite de credito que quiera.
+--   - Cajero/supervisor: el limite queda topado en v_limite_max_cajero (S/ 100,
+--     el mismo valor inicial que ofrece la pantalla Clientes); un
+--     administrador puede ampliarlo despues en Clientes.
+--   - No permite duplicados: mismo nombre (sin importar mayusculas/espacios) y
+--     mismo telefono (o ambos sin telefono).
+create or replace function public.registrar_cliente_fiado(
+  p_nombre    text,
+  p_telefono  text    default null,
+  p_direccion text    default null,
+  p_limite    numeric default 100
+)
+returns public.clientes_credito
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_nombre    text;
+  v_tel       text;
+  v_dir       text;
+  v_limite    numeric(10,2);
+  v_cliente   public.clientes_credito%rowtype;
+  v_limite_max_cajero constant numeric := 100;
+begin
+  if auth.uid() is null
+     or not exists (select 1 from public.perfiles where id = auth.uid() and activo = true) then
+    raise exception 'Sesion no valida.';
+  end if;
+
+  v_nombre := regexp_replace(btrim(coalesce(p_nombre, '')), '\s+', ' ', 'g');
+  if char_length(v_nombre) < 2 or char_length(v_nombre) > 80 then
+    raise exception 'El nombre del cliente debe tener entre 2 y 80 caracteres.';
+  end if;
+
+  v_tel := nullif(btrim(coalesce(p_telefono, '')), '');
+  if v_tel is not null and v_tel !~ '^[0-9+() -]{6,20}$' then
+    raise exception 'El telefono no es valido (solo numeros, +, espacios, parentesis o guion; 6 a 20 caracteres).';
+  end if;
+
+  v_dir := nullif(btrim(coalesce(p_direccion, '')), '');
+  if v_dir is not null and char_length(v_dir) > 120 then
+    raise exception 'La direccion es demasiado larga (maximo 120 caracteres).';
+  end if;
+
+  if p_limite is null or p_limite < 0 or p_limite > 100000 then
+    raise exception 'El limite de credito debe estar entre 0 y 100000.';
+  end if;
+  v_limite := round(p_limite, 2);
+  if not public.es_admin() then
+    v_limite := least(v_limite, v_limite_max_cajero);
+  end if;
+
+  if exists (
+    select 1 from public.clientes_credito c
+    where c.activo = true
+      and lower(regexp_replace(btrim(c.nombre), '\s+', ' ', 'g')) = lower(v_nombre)
+      and coalesce(regexp_replace(c.telefono, '\s+', '', 'g'), '') = coalesce(regexp_replace(v_tel, '\s+', '', 'g'), '')
+  ) then
+    raise exception 'Ya existe un cliente llamado "%" con ese mismo telefono. Seleccionalo de la lista o agrega un dato que los distinga.', v_nombre;
+  end if;
+
+  insert into public.clientes_credito (nombre, telefono, direccion, limite_credito, deuda_actual)
+    values (v_nombre, v_tel, v_dir, v_limite, 0)
+    returning * into v_cliente;
+
+  return v_cliente;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
 -- RPC 4: INCREMENTAR CAJA (acumula totales por metodo de pago)
 -- ----------------------------------------------------------------------------
 create or replace function public.incrementar_caja(

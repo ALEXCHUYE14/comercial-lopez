@@ -119,6 +119,9 @@ export type Venta = {
   /** Auditoría de la anulación (ver RPC anular_venta). Opcionales: ausentes en
    * ventas anteriores a esta función y en la venta sintética del modo offline. */
   anulada_por?: string | null
+  /** Última corrección de la venta (cambio de productos, ver RPC modificar_venta). */
+  modificada_por?: string | null
+  modificada_en?: string | null
   /** Desglose del pago cuando metodo = 'mixto' (ver utils/pagos.ts); null en el resto. */
   pagos?: PagoVenta[] | null
   anulada_en?: string | null
@@ -393,6 +396,14 @@ export interface Database {
         Returns: void
       }
       anular_venta: { Args: { p_venta_id: string }; Returns: Venta }
+      modificar_venta: {
+        Args: { p_venta_id: string; p_items: unknown; p_pagos?: unknown; p_motivo?: string | null }
+        Returns: Venta
+      }
+      registrar_cliente_fiado: {
+        Args: { p_nombre: string; p_telefono?: string | null; p_direccion?: string | null; p_limite?: number }
+        Returns: ClienteCredito
+      }
       es_admin: { Args: Record<string, never>; Returns: boolean }
       es_supervisor_o_admin: { Args: Record<string, never>; Returns: boolean }
       cerrar_caja_arqueo: {

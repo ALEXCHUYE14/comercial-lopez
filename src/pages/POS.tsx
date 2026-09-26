@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useEffect } from 'react'
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
 import {
   Search,
   ScanLine,
@@ -16,7 +16,7 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
-import { useCarrito } from '@/hooks/useCarrito'
+import { reconstruirCarrito, useCarrito } from '@/hooks/useCarrito'
 import { useClientes } from '@/hooks/useClientes'
 import { useKeyboardScanner } from '@/hooks/useKeyboardScanner'
 import { useVentasOffline } from '@/hooks/useVentasOffline'
@@ -42,11 +42,12 @@ import {
 import { BRAND } from '@/config/brand'
 import { beepExito, beepError, desbloquearAudioScanner } from '@/utils/beep'
 import { pareceErrorDeRed, type VentaOffline } from '@/utils/offlineDB'
+import { borrarCarrito, guardarCarrito, leerCarrito } from '@/utils/carritoPersistido'
 import type { ItemCarrito, MetodoPago, ModalidadVenta, PagoVenta, Producto, Venta } from '@/types/database'
 
 export function POS() {
   const { productos, categorias, cargando } = useProductos()
-  const { clientes } = useClientes()
+  const { clientes, crearParaFiado } = useClientes()
   const { perfil, esAdmin } = useAuth()
   const nombreDisplay = perfil?.rol === 'administrador' ? BRAND.operador : (perfil?.nombre?.split(' ')[0] ?? 'Cajero')
   const {
@@ -59,6 +60,52 @@ export function POS() {
   } = useCajaCtx()
   const toast = useToast()
   const carrito = useCarrito()
+
+  // ── Carrito persistente ──────────────────────────────────────────────────
+  // La app se actualiza sola (PWA con autoUpdate) y recarga la pagina: sin
+  // esto el carrito ya armado desaparecia. Se guarda en este equipo, por
+  // usuario, y solo se vacia cuando el cajero lo cancela ("Vaciar") o cobra.
+  const usuarioId = perfil?.id ?? null
+  const carritoRecuperado = useRef(false)
+  const [carritoListo, setCarritoListo] = useState(false)
+
+  // 1) Al abrir el POS (con los productos ya cargados) se recupera lo guardado,
+  //    reconstruido con los productos ACTUALES: precios/stock vigentes tras la
+  //    actualizacion, no los de antes.
+  useEffect(() => {
+    if (carritoRecuperado.current || cargando || !usuarioId) return
+    carritoRecuperado.current = true
+    const guardado = leerCarrito(usuarioId)
+    if (guardado) {
+      const r = reconstruirCarrito(guardado.lineas, productos)
+      if (r.items.length > 0) {
+        carrito.restaurar(r.items, guardado.descuento)
+        const avisos: string[] = []
+        if (r.omitidas > 0) avisos.push(`${r.omitidas} producto(s) ya no están disponibles`)
+        if (r.ajustadas > 0) avisos.push(`${r.ajustadas} cantidad(es) se ajustaron al stock actual`)
+        toast.info(
+          `Se recuperó tu carrito (${r.items.length} producto${r.items.length === 1 ? '' : 's'})` +
+            (avisos.length ? ` — ${avisos.join(' y ')}.` : '.'),
+        )
+      } else {
+        borrarCarrito(usuarioId)
+        toast.info('El carrito guardado ya no tenía productos disponibles y se descartó.')
+      }
+    }
+    setCarritoListo(true)
+  }, [cargando, usuarioId, productos, carrito, toast])
+
+  // 2) Cada cambio del carrito se guarda — pero SOLO despues de haber intentado
+  //    recuperar: si no, el carrito vacio del primer render pisaria lo guardado
+  //    antes de leerlo.
+  useEffect(() => {
+    if (!carritoListo || !usuarioId) return
+    guardarCarrito(
+      usuarioId,
+      carrito.items.map((i) => ({ productoId: i.producto.id, modalidad: i.modalidad, cantidad: i.cantidad })),
+      carrito.descuento,
+    )
+  }, [carritoListo, usuarioId, carrito.items, carrito.descuento])
 
   // Efecto secundario que falta aplicar cuando una venta ENCOLADA offline
   // finalmente se sincroniza: acreditar su monto a la caja en el servidor.
@@ -227,6 +274,8 @@ export function POS() {
       intentos: 0,
     }
     await ventasOffline.encolar(pendiente)
+    // La venta ya quedo guardada: el carrito guardado deja de tener sentido.
+    if (usuarioId) borrarCarrito(usuarioId)
     if (caja?.id) aplicarVentaLocal(caja.id, metodo, carrito.totales.total)
 
     // Venta "sintetica" solo para mostrar/imprimir el ticket: numero=0 es la
@@ -325,6 +374,10 @@ export function POS() {
         ...(metodo === 'mixto' && pagos ? { p_pagos: pagos } : {}),
       })
       if (error) throw error
+      // La venta YA quedo registrada en el servidor: se borra el carrito guardado
+      // de inmediato (no al final). Si la pagina se recargara justo aqui, lo
+      // contrario restauraria estos mismos productos y se podria cobrar dos veces.
+      if (usuarioId) borrarCarrito(usuarioId)
 
       // A partir de aqui la venta ya quedo registrada y el stock descontado
       // en el servidor: si algo falla despues NO se debe relanzar (el catch de
@@ -791,6 +844,8 @@ export function POS() {
         total={carrito.totales.total}
         procesando={procesando}
         clientes={clientes}
+        onCrearCliente={crearParaFiado}
+        puedeFijarLimite={esAdmin}
         onConfirmar={cobrar}
         offline={!ventasOffline.online}
       />
