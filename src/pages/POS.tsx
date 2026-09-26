@@ -336,10 +336,15 @@ export function POS() {
       // Actualizar deuda del cliente si la venta es al fiado
       if (metodo === 'fiado' && clienteId) {
         try {
-          await supabase.rpc('registrar_cargo_fiado', {
+          // supabase-js NO lanza ante un error del RPC: lo devuelve en
+          // `error`. Sin este chequeo el catch de abajo jamas se ejecutaba y
+          // un rechazo (limite de credito, cliente inactivo) pasaba en
+          // silencio: la venta quedaba al fiado sin deuda cargada.
+          const { error: errCargo } = await supabase.rpc('registrar_cargo_fiado', {
             p_cliente_id: clienteId,
             p_monto: carrito.totales.total,
           })
+          if (errCargo) throw new Error(errCargo.message)
         } catch (e) {
           // El RPC ahora tambien puede rechazar el cargo por una razon de
           // negocio real (limite de credito superado — ver schema.sql), no

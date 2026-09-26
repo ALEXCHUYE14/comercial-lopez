@@ -113,6 +113,10 @@ export type Venta = {
   pago_recibido: number
   vuelto: number
   anulada: boolean
+  /** Auditoría de la anulación (ver RPC anular_venta). Opcionales: ausentes en
+   * ventas anteriores a esta función y en la venta sintética del modo offline. */
+  anulada_por?: string | null
+  anulada_en?: string | null
   idempotency_key: string | null
   creado_en: string
 }

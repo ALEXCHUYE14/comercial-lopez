@@ -350,11 +350,17 @@ export function useCaja(cajeroId: string | null) {
     metodo: 'efectivo' | 'yape' | 'fiado',
     monto: number,
   ): Promise<void> {
-    await supabase.rpc('incrementar_caja', {
+    // supabase-js devuelve el error del RPC en vez de lanzarlo: sin este
+    // chequeo una suma a caja rechazada (caja cerrada, caja ajena) pasaba en
+    // silencio y el total en pantalla quedaba distinto al del servidor. Los
+    // llamadores (sumarVenta / POS / sincronizacion offline) ya esperan que
+    // esto lance para avisar al usuario.
+    const { error } = await supabase.rpc('incrementar_caja', {
       p_caja_id: cajaId,
       p_metodo: metodo,
       p_monto: toNum(monto),
     } as never)
+    if (error) throw new Error(error.message)
   }
 
   // Incrementa los totales de la caja tras una venta EN LINEA — llamado

@@ -983,8 +983,27 @@ end;
 $$;
 
 -- ----------------------------------------------------------------------------
--- RPC 3: ANULAR VENTA (solo admin) - repone stock y marca anulada
+-- RPC 3: ANULAR VENTA - repone stock, revierte caja y deuda, y marca anulada
 -- ----------------------------------------------------------------------------
+-- Quien puede anular:
+--   - administrador: cualquier venta.
+--   - cajero / supervisor: SOLO sus propias ventas y SOLO mientras la caja de
+--     esa venta siga abierta (y sea la suya). Con la caja ya cerrada el
+--     arqueo quedo registrado: anular ahi cambiaria un cierre ya firmado, asi
+--     que se le pide a un administrador.
+-- Que revierte (todo en UNA transaccion: si algo falla, no queda nada a medias):
+--   1) Stock: repone "unidades" (lo realmente descontado, en unidad base) y
+--      deja un movimiento 'devolucion' en el kardex.
+--   2) Caja: resta el total de la venta del acumulado por metodo (efectivo /
+--      yape / fiado) de su caja, SOLO si esa caja sigue abierta — sin esto el
+--      efectivo esperado del cierre quedaba inflado y el arqueo daba un
+--      faltante falso. En una caja ya cerrada (anulacion de un admin) el
+--      cierre historico no se modifica.
+--   3) Fiado: resta el total de la deuda del cliente (nunca por debajo de 0).
+--   4) Auditoria: quien anulo y cuando (anulada_por / anulada_en).
+alter table public.ventas add column if not exists anulada_por uuid;
+alter table public.ventas add column if not exists anulada_en  timestamptz;
+
 create or replace function public.anular_venta(p_venta_id uuid)
 returns public.ventas
 language plpgsql
@@ -994,15 +1013,31 @@ declare
   v_venta   public.ventas%rowtype;
   v_det     record;
   v_prod    public.productos%rowtype;
+  v_caja    public.cajas%rowtype;
   v_nombre  text;
+  v_admin   boolean;
 begin
-  if not public.es_admin() then
-    raise exception 'Solo un administrador puede anular ventas.';
+  if auth.uid() is null then
+    raise exception 'Sesion no valida.';
   end if;
+  v_admin := public.es_admin();
 
   select * into v_venta from public.ventas where id = p_venta_id for update;
   if not found then raise exception 'Venta no encontrada.'; end if;
   if v_venta.anulada then raise exception 'La venta ya esta anulada.'; end if;
+
+  if not v_admin then
+    if v_venta.cajero_id is distinct from auth.uid() then
+      raise exception 'Solo puedes anular tus propias ventas. Pide a un administrador que anule esta.';
+    end if;
+    if v_venta.caja_id is null then
+      raise exception 'Esta venta no esta asociada a una caja abierta. Pide a un administrador que la anule.';
+    end if;
+    select * into v_caja from public.cajas where id = v_venta.caja_id;
+    if not found or v_caja.estado <> 'abierta' or v_caja.cajero_id is distinct from auth.uid() then
+      raise exception 'La caja de esta venta ya fue cerrada. Pide a un administrador que la anule.';
+    end if;
+  end if;
 
   select nombre into v_nombre from public.perfiles where id = auth.uid();
 
@@ -1032,7 +1067,31 @@ begin
     end if;
   end loop;
 
-  update public.ventas set anulada = true where id = p_venta_id
+  -- Caja: solo si sigue abierta (ver cabecera). greatest(...,0) evita un total
+  -- negativo si por una falla previa esa venta nunca llego a sumarse a la caja.
+  if v_venta.caja_id is not null then
+    select * into v_caja from public.cajas where id = v_venta.caja_id for update;
+    if found and v_caja.estado = 'abierta' then
+      if v_venta.metodo = 'efectivo' then
+        update public.cajas set total_efectivo = greatest(total_efectivo - v_venta.total, 0) where id = v_caja.id;
+      elsif v_venta.metodo = 'yape' then
+        update public.cajas set total_yape = greatest(total_yape - v_venta.total, 0) where id = v_caja.id;
+      elsif v_venta.metodo = 'fiado' then
+        update public.cajas set total_fiado = greatest(total_fiado - v_venta.total, 0) where id = v_caja.id;
+      end if;
+    end if;
+  end if;
+
+  -- Fiado: la deuda que esta venta le cargo al cliente deja de existir.
+  if v_venta.metodo = 'fiado' and v_venta.cliente_id is not null then
+    update public.clientes_credito
+      set deuda_actual = greatest(deuda_actual - v_venta.total, 0)
+      where id = v_venta.cliente_id;
+  end if;
+
+  update public.ventas
+    set anulada = true, anulada_por = auth.uid(), anulada_en = now()
+    where id = p_venta_id
     returning * into v_venta;
 
   return v_venta;

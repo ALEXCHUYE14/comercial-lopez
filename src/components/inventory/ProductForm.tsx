@@ -208,6 +208,17 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
         const upc = parseInt(f.unidades_por_caja, 10)
         sugerido = Number.isFinite(upc) && upc > 0 ? upc / 2 : null
       }
+      // Medio / cuarto de paquete cuando la base NO es "paquete" (ej. unidad,
+      // kg): un paquete no tiene tamano universal, asi que se sugiere la
+      // mitad / cuarta parte del "Paquete" que ya se haya activado y llenado
+      // arriba. Si todavia no esta definido, queda en blanco (se escribe a mano).
+      if ((clave === 'medio_paquete' || clave === 'cuarto_paquete') && f.unidad !== 'paquete') {
+        const fp = parseFloat(prev.paquete.factor)
+        sugerido =
+          prev.paquete.on && Number.isFinite(fp) && fp > 0
+            ? Math.round((fp / (clave === 'medio_paquete' ? 2 : 4)) * 1e6) / 1e6
+            : null
+      }
       return {
         ...prev,
         [clave]: { ...actual, on: true, factor: actual.factor || (sugerido !== null ? String(sugerido) : '') },
@@ -836,7 +847,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
           <p className="text-xs text-ink-400">
             {esGranel
               ? `Vende también fraccionado (ej. medio, cuarto u octavo). El stock siempre se lleva en ${f.unidad}.`
-              : `Vende también por docena, media docena o cuarto de docena${f.unidad === 'paquete' ? ', medio o cuarto de paquete' : ''}${tieneCaja ? ', o media caja' : ''}. El stock siempre se lleva en la unidad base.`}
+              : `Vende también por docena, media docena o cuarto de docena${f.unidad === 'paquete' ? ', medio o cuarto de paquete' : ', paquete, medio o cuarto de paquete'}${tieneCaja ? ', o media caja' : ''}. El stock siempre se lleva en la unidad base.`}
           </p>
           <div className="mt-3 space-y-2.5">
             {clavesPres.map((clave) => {

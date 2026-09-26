@@ -73,8 +73,8 @@ const TONO_PAGO: Record<MetodoPago, 'neutral' | 'success' | 'info' | 'warning'> 
 }
 
 export function Ventas() {
-  const { esAdmin } = useAuth()
-  const { caja } = useCajaCtx()
+  const { esAdmin, perfil } = useAuth()
+  const { caja, recargar: recargarCaja } = useCajaCtx()
   const toast = useToast()
 
   const hoy = ymd(new Date())
@@ -616,11 +616,26 @@ export function Ventas() {
       {/* Reimpresion de ticket */}
       <TicketReprint
         venta={ticket}
-        esAdmin={esAdmin}
+        // El admin puede anular cualquier venta; el resto solo la suya y con
+        // su caja abierta (misma regla que aplica el RPC anular_venta, que es
+        // quien realmente decide — esto solo evita mostrar un boton que el
+        // servidor rechazaria).
+        puedeAnular={
+          !!ticket &&
+          !ticket.anulada &&
+          (esAdmin ||
+            (!!perfil &&
+              ticket.cajero_id === perfil.id &&
+              !!ticket.caja_id &&
+              ticket.caja_id === caja?.id))
+        }
         onClose={() => setTicket(null)}
         onAnulada={() => {
           setTicket(null)
           cargar()
+          // La anulacion tambien resta el total de la caja abierta: se
+          // recarga para que el resumen en pantalla refleje el nuevo monto.
+          recargarCaja()
         }}
       />
     </div>
@@ -642,12 +657,12 @@ function etiquetaDetalle(d: DetalleVenta): string | undefined {
 /* ─── Reimpresion de ticket desde historial ───────────────────────────────── */
 function TicketReprint({
   venta,
-  esAdmin,
+  puedeAnular,
   onClose,
   onAnulada,
 }: {
   venta: Venta | null
-  esAdmin: boolean
+  puedeAnular: boolean
   onClose: () => void
   onAnulada: () => void
 }) {
@@ -674,7 +689,7 @@ function TicketReprint({
   async function anular() {
     if (!venta) return
     const ok = window.confirm(
-      `Anular el comprobante #${venta.numero}? Se devolvera el stock vendido.`,
+      `Anular el comprobante #${venta.numero}? Se devolvera el stock vendido y se restara de la caja (o de la deuda del cliente, si fue al fiado).`,
     )
     if (!ok) return
     setAnulando(true)
@@ -783,7 +798,7 @@ function TicketReprint({
             </Button>
           </div>
           <div className="flex gap-2">
-            {esAdmin && !venta.anulada && (
+            {puedeAnular && !venta.anulada && (
               <Button variant="danger" className="flex-1" onClick={anular} loading={anulando}>
                 <Ban className="size-4" /> Anular
               </Button>
