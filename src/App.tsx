@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/context/AuthContext'
 import { CajaProvider } from '@/context/CajaContext'
@@ -41,16 +41,31 @@ function Cargando() {
  * vuelve a primer plano (asi un cajero con el POS abierto todo el dia ve los
  * cambios que hizo el administrador sin recargar).
  */
+// En un celular usado como POS, "visibilitychange" dispara MUCHAS veces por
+// turno (se bloquea la pantalla, llega una notificacion, se cambia de app y
+// se vuelve) — sin un enfriamiento, cada una de esas vueltas pedia de nuevo
+// la configuracion del negocio a Supabase. El nombre/RUC/QR del negocio casi
+// nunca cambia en medio del dia, asi que no hace falta reconsultarlo mas
+// seguido que esto; sigue habiendo una sincronizacion inmediata al iniciar
+// sesion (fuera del enfriamiento) y cuando el propio administrador guarda un
+// cambio (ver useConfiguracionNegocio.ts).
+const ENFRIAMIENTO_SYNC_NEGOCIO_MS = 5 * 60 * 1000
+
 function SincronizarNegocio() {
   const { session } = useAuth()
   const { yapeQrUrl } = useNegocio()
   const haySesion = !!session
+  const ultimoSync = useRef(0)
 
   useEffect(() => {
     if (!haySesion) return
     sincronizarNegocio()
+    ultimoSync.current = Date.now()
     const alVolver = () => {
-      if (document.visibilityState === 'visible') sincronizarNegocio()
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - ultimoSync.current < ENFRIAMIENTO_SYNC_NEGOCIO_MS) return
+      ultimoSync.current = Date.now()
+      sincronizarNegocio()
     }
     document.addEventListener('visibilitychange', alVolver)
     return () => document.removeEventListener('visibilitychange', alVolver)
