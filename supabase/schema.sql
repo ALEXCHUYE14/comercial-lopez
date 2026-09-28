@@ -649,9 +649,17 @@ insert into storage.buckets (id, name, public)
 values ('product-images', 'product-images', true)
 on conflict (id) do nothing;
 
+-- Un bucket "public" ya sirve sus archivos SIN pasar por RLS (ver
+-- "Storage Buckets" en la documentacion de Supabase): esta politica de
+-- SELECT no es necesaria para que el POS muestre las fotos a nadie, solo
+-- habilita listar el contenido del bucket con la API. Se restringe a
+-- "authenticated" (la necesita el propio personal al subir una foto con
+-- upsert, que revisa si el archivo ya existe) para no dejarla abierta a
+-- cualquiera sin sesion — antes de esto, Supabase marcaba el bucket con el
+-- aviso "Los clientes pueden listar todos los archivos en este bucket".
 drop policy if exists product_images_select on storage.objects;
 create policy product_images_select on storage.objects for select
-  using (bucket_id = 'product-images');
+  to authenticated using (bucket_id = 'product-images');
 
 drop policy if exists product_images_insert on storage.objects;
 create policy product_images_insert on storage.objects for insert
@@ -2282,9 +2290,12 @@ insert into storage.buckets (id, name, public)
 values ('negocio-assets', 'negocio-assets', true)
 on conflict (id) do nothing;
 
+-- Igual que en product_images_select arriba: el bucket ya es publico para
+-- lectura sin pasar por RLS, asi que esta politica solo habilita listar su
+-- contenido con la API — se restringe a "authenticated".
 drop policy if exists negocio_assets_select on storage.objects;
 create policy negocio_assets_select on storage.objects for select
-  using (bucket_id = 'negocio-assets');
+  to authenticated using (bucket_id = 'negocio-assets');
 drop policy if exists negocio_assets_insert on storage.objects;
 create policy negocio_assets_insert on storage.objects for insert
   to authenticated with check (bucket_id = 'negocio-assets' and public.es_admin());
