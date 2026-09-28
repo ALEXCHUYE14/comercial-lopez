@@ -41,6 +41,24 @@ export default defineConfig({
             handler: 'NetworkFirst',
             options: { cacheName: 'supabase-api', networkTimeoutSeconds: 5 },
           },
+          // Fotos de productos/negocio (bucket de Storage): la URL guardada
+          // en la base ya lleva su propio "?t=" que cambia solo cuando la
+          // foto cambia (ver useProductoImagen.ts), asi que es seguro
+          // servirla siempre desde el cache del dispositivo sin volver a
+          // pedirla a Supabase. Antes, al no estar cubierta por ninguna
+          // regla aqui, cada foto se re-descargaba por red normal (sujeta
+          // solo al cacheControl de 1 hora de Supabase) cada vez que se
+          // abria o recargaba la app — la causa real del "Cached Egress"
+          // que superaba la cuota del plan gratuito.
+          {
+            urlPattern: ({ url }) => url.pathname.startsWith('/storage/v1/object/public/'),
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'supabase-storage-imagenes',
+              expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 365 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
         ],
       },
     }),

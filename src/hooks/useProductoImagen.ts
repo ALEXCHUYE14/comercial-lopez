@@ -65,9 +65,16 @@ export function useProductoImagen() {
       const blob = await comprimirImagen(file)
       const path = `${productoId}.jpg`
 
+      // cacheControl largo (1 año): la URL ya lleva su propio "?t=" con la
+      // fecha de esta subida, asi que cambia sola cuando la foto cambia — es
+      // seguro decirle al navegador/CDN que la guarde por mucho tiempo en vez
+      // de volver a descargarla cada hora (el valor por defecto de Supabase).
+      // Sin esto, cada foto de producto se re-descargaba de Supabase una vez
+      // por hora en cada dispositivo de cada cajero que la tuviera abierta,
+      // lo que disparaba la cuota de "Cached Egress" del plan gratuito.
       const { error } = await supabase.storage
         .from(BUCKET)
-        .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
+        .upload(path, blob, { upsert: true, contentType: 'image/jpeg', cacheControl: '31536000' })
 
       if (error) throw new Error(error.message)
 

@@ -54,9 +54,7 @@ export function POS() {
     caja,
     cargando: cajaCargando,
     abrir: abrirCaja,
-    sumarVenta,
     aplicarVentaLocal,
-    confirmarVentaRemota,
   } = useCajaCtx()
   const toast = useToast()
   const carrito = useCarrito()
@@ -107,18 +105,17 @@ export function POS() {
     )
   }, [carritoListo, usuarioId, carrito.items, carrito.descuento])
 
-  // Efecto secundario que falta aplicar cuando una venta ENCOLADA offline
-  // finalmente se sincroniza: acreditar su monto a la caja en el servidor.
-  // (El fiado esta excluido del modo offline — ver PaymentModal — asi que
-  // aqui nunca hace falta replicar registrar_cargo_fiado.)
-  const aplicarEfectosVentaSincronizada = useCallback(
-    async (venta: Venta, pendiente: VentaOffline) => {
-      if (pendiente.cajaId) {
-        await confirmarVentaRemota(pendiente.cajaId, pendiente.metodo, venta.total)
-      }
-    },
-    [confirmarVentaRemota],
-  )
+  // Ya no hace falta re-acreditar nada al sincronizar una venta encolada
+  // offline: registrar_venta acredita la caja en la MISMA transaccion que
+  // registra la venta (ver schema.sql), y la pantalla ya se habia
+  // actualizado de forma optimista al encolarla (aplicarVentaLocal en
+  // encolarOffline). Antes esta funcion hacia una segunda llamada RPC
+  // (incrementar_caja) aparte; si esa llamada se perdia, la venta ya
+  // sincronizada quedaba sin acreditar en el servidor aunque en pantalla
+  // pareciera correcta — la misma falla que causaba "sobrantes" en el
+  // arqueo. Se mantiene el parametro para no romper la firma que espera
+  // useVentasOffline.
+  const aplicarEfectosVentaSincronizada = useCallback(async (_venta: Venta, _pendiente: VentaOffline) => {}, [])
   const avisarSincronizacion = useCallback((mensaje: string) => toast.error(mensaje), [toast])
   const ventasOffline = useVentasOffline(aplicarEfectosVentaSincronizada, avisarSincronizacion)
 
@@ -379,24 +376,31 @@ export function POS() {
       // contrario restauraria estos mismos productos y se podria cobrar dos veces.
       if (usuarioId) borrarCarrito(usuarioId)
 
-      // A partir de aqui la venta ya quedo registrada y el stock descontado
-      // en el servidor: si algo falla despues NO se debe relanzar (el catch de
-      // abajo re-habilitaria "Confirmar cobro" y el cajero reintentaria,
-      // duplicando la venta). Cualquier error en los pasos siguientes solo se
-      // muestra como advertencia, sin deshacer el cobro ya completado.
+      // A partir de aqui la venta ya quedo registrada, el stock descontado y
+      // la caja acreditada en el servidor — todo en una sola transaccion
+      // dentro de registrar_venta (ver schema.sql). Si algo falla despues NO
+      // se debe relanzar (el catch de abajo re-habilitaria "Confirmar cobro"
+      // y el cajero reintentaria, duplicando la venta). Cualquier error en
+      // los pasos siguientes solo se muestra como advertencia, sin deshacer
+      // el cobro ya completado.
       let advertencia: string | null = null
 
-      // Actualizar totales de la caja
+      // El servidor YA acredito la caja dentro de registrar_venta: aqui solo
+      // se refleja en pantalla (sin RPC) para que el total mostrado no quede
+      // desfasado hasta el proximo refresco. Antes esto era una segunda
+      // llamada al servidor (sumarVenta -> incrementar_caja) separada de la
+      // venta; si esa llamada se perdia (red inestable, la pestaña se
+      // recargaba por la actualizacion automatica justo en ese instante), la
+      // venta y el cobro en efectivo ya habian ocurrido pero la caja nunca
+      // quedaba acreditada — la causa de los "sobrantes" vistos en el
+      // arqueo. Al no depender ya de ninguna llamada de red, esto no puede
+      // fallar.
       if (caja?.id) {
-        try {
-          if (metodo === 'mixto') {
-            // Cada parte suma al acumulado de SU metodo (efectivo / yape).
-            for (const p of pagos ?? []) await sumarVenta(caja.id, p.metodo, p.monto)
-          } else {
-            await sumarVenta(caja.id, metodo, carrito.totales.total)
-          }
-        } catch {
-          advertencia = 'La venta se registró, pero no se pudo actualizar el total de caja. Avisa al administrador.'
+        if (metodo === 'mixto') {
+          // Cada parte suma al acumulado de SU metodo (efectivo / yape).
+          for (const p of pagos ?? []) aplicarVentaLocal(caja.id, p.metodo, p.monto)
+        } else if (metodo === 'efectivo' || metodo === 'yape' || metodo === 'fiado') {
+          aplicarVentaLocal(caja.id, metodo, carrito.totales.total)
         }
       }
 

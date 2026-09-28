@@ -778,6 +778,7 @@ declare
   v_pag_ye      numeric;
   v_n_ef        integer;
   v_n_ye        integer;
+  v_caja        public.cajas%rowtype;
 begin
   if jsonb_array_length(p_items) = 0 then
     raise exception 'El carrito esta vacio.';
@@ -927,6 +928,39 @@ begin
     end if;
     return v_venta;
   end;
+
+  -- 3b) Acreditar la caja EN LA MISMA TRANSACCION que registra la venta.
+  -- Antes esto lo hacia el frontend con una segunda llamada RPC aparte
+  -- (incrementar_caja) despues de que esta funcion ya habia devuelto exito.
+  -- Si esa segunda llamada se perdia -- wifi inestable, la pestaña se
+  -- recarga por la actualizacion automatica de la PWA justo en ese
+  -- instante, el celular se bloquea -- la venta y el cobro en efectivo YA
+  -- habian ocurrido (stock descontado, ticket entregado, plata fisica en la
+  -- caja) pero el total esperado de la caja nunca se enteraba de ese
+  -- ingreso. Con el tiempo eso se acumulaba y aparecia en el arqueo como un
+  -- "sobrante" (la plata contada siempre por encima de la esperada, nunca al
+  -- reves): exactamente el patron que se vio en produccion. Al quedar
+  -- adentro de esta misma transaccion, o se registran la venta Y la caja
+  -- juntas, o no se registra ninguna de las dos.
+  if p_caja_id is not null then
+    select * into v_caja from public.cajas where id = p_caja_id for update;
+    if found and v_caja.estado = 'abierta' then
+      if p_metodo::text = 'mixto' then
+        update public.cajas set
+          total_efectivo = total_efectivo + v_pag_ef,
+          total_yape     = total_yape     + v_pag_ye
+        where id = v_caja.id;
+      elsif p_metodo::text = 'efectivo' then
+        update public.cajas set total_efectivo = total_efectivo + v_total where id = v_caja.id;
+      elsif p_metodo::text = 'yape' then
+        update public.cajas set total_yape = total_yape + v_total where id = v_caja.id;
+      elsif p_metodo::text = 'fiado' then
+        update public.cajas set total_fiado = total_fiado + v_total where id = v_caja.id;
+      end if;
+      -- tarjeta / plin / transferencia: sin acumulado propio en caja (igual
+      -- que en modificar_venta).
+    end if;
+  end if;
 
   -- 4) Detalle + descuento de stock + kardex
   for v_item in select * from jsonb_array_elements(p_items)
