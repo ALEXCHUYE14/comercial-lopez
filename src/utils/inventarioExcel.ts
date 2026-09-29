@@ -30,6 +30,32 @@ function siNo(v: boolean): string {
   return v ? 'SI' : 'NO'
 }
 
+// El formato .xlsx es XML por dentro, y el estandar XML 1.0 prohibe casi
+// todos los caracteres de control (0x00-0x1F salvo tab/salto de
+// linea/retorno de carro) y 0x7F. Un solo caracter asi en una celda —
+// tipico de un nombre pegado desde un escaneo de codigo de barras fallido o
+// copiado de otra fuente con caracteres invisibles — basta para que el
+// archivo quede mal formado: la libreria lo escribe tal cual sin avisar, y
+// Excel (que valida estricto) lo rechaza con "Excel encontró un problema
+// que le impide funcionar correctamente" en vez de abrirlo. Se limpia ANTES
+// de escribir la celda, en cada campo de texto que puede venir de datos
+// reales (nombre, SKU, categoria, unidad) — nunca en los que arma el propio
+// codigo (SI/NO, "unidad"/"granel", fechas AAAA-MM-DD).
+function textoSeguro(v: string): string {
+  // eslint-disable-next-line no-control-regex
+  return v.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+}
+
+// Un precio o stock corrupto en la base (NaN/Infinity, nunca deberia pasar
+// por las validaciones del servidor, pero un dato viejo importado antes de
+// esas validaciones es posible) tambien produce un .xlsx invalido: se
+// escribe como numero pero "NaN"/"Infinity" no son valores numericos
+// validos en el XML de la hoja. Se cambia a 0 en vez de dejarlo pasar.
+function numeroSeguro(v: number | null | undefined): number | '' {
+  if (v === null || v === undefined) return ''
+  return Number.isFinite(v) ? v : 0
+}
+
 /** Descarga el inventario completo como .xlsx, con todas las columnas que
  * usa el sistema — pensado tanto para respaldo como para volver a subirlo
  * despues de editarlo (agregar filas nuevas, corregir precios, etc.). No
@@ -42,22 +68,22 @@ export async function exportarInventarioExcel(productos: Producto[]): Promise<vo
   const filas = [
     ENCABEZADOS as unknown as string[],
     ...productos.map((p) => [
-      p.sku,
-      p.nombre,
-      p.categorias?.nombre ?? '',
+      textoSeguro(p.sku),
+      textoSeguro(p.nombre),
+      textoSeguro(p.categorias?.nombre ?? ''),
       p.tipo_venta === 'granel' ? 'granel' : 'unidad',
-      p.unidad,
-      p.precio_compra,
-      p.precio_venta,
-      p.precio_venta_caja ?? '',
-      p.stock_actual,
-      p.stock_minimo,
+      textoSeguro(p.unidad),
+      numeroSeguro(p.precio_compra),
+      numeroSeguro(p.precio_venta),
+      numeroSeguro(p.precio_venta_caja),
+      numeroSeguro(p.stock_actual),
+      numeroSeguro(p.stock_minimo),
       siNo(p.tiene_caja),
-      p.unidades_por_caja ?? '',
+      numeroSeguro(p.unidades_por_caja),
       siNo(p.tiene_saco),
-      p.kg_por_saco ?? '',
-      p.precio_venta_saco ?? '',
-      p.fecha_vencimiento ?? '',
+      numeroSeguro(p.kg_por_saco),
+      numeroSeguro(p.precio_venta_saco),
+      textoSeguro(p.fecha_vencimiento ?? ''),
       siNo(p.activo),
     ]),
   ]
