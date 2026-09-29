@@ -2347,6 +2347,43 @@ begin
 end;
 $$;
 
+-- ----------------------------------------------------------------------------
+-- RPC 11: LISTAR USUARIOS CON CORREO (solo administrador)
+-- ----------------------------------------------------------------------------
+-- El correo de cada usuario vive en auth.users, no en public.perfiles — esa
+-- tabla del propio Supabase no esta expuesta a la API (PostgREST no permite
+-- consultar el esquema "auth" directamente desde el navegador), asi que la
+-- unica forma de leerlo desde el frontend es a traves de una funcion como
+-- esta, que corre en el servidor (security definer) con permiso para hacer
+-- el join. Nunca devuelve la contrasena: esa no se guarda en ningun lado en
+-- texto legible, ni siquiera Supabase la tiene — solo un hash de un solo
+-- sentido (ver columna encrypted_password de auth.users), que no sirve para
+-- reconstruir la contrasena original y por eso no tiene sentido exponerlo.
+create or replace function public.listar_usuarios()
+returns table (
+  id         uuid,
+  nombre     text,
+  email      text,
+  rol        rol_usuario,
+  activo     boolean,
+  creado_en  timestamptz
+)
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede ver el correo de los usuarios.';
+  end if;
+
+  return query
+    select p.id, p.nombre, u.email::text, p.rol, p.activo, p.creado_en
+    from public.perfiles p
+    join auth.users u on u.id = p.id
+    order by p.nombre;
+end;
+$$;
+
 -- ============================================================================
 -- ROW LEVEL SECURITY
 -- ============================================================================

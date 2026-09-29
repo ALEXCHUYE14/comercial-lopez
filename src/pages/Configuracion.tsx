@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from 'react'
 import {
   Printer, Bluetooth, CheckCircle2, AlertTriangle, Info, Users, ShieldCheck, ShieldAlert,
-  UserPlus, Eye, EyeOff, Store, QrCode, Upload, Trash2,
+  UserPlus, Eye, EyeOff, Store, QrCode, Upload, Trash2, Download,
 } from 'lucide-react'
 import { Card, Button, Badge, Spinner } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
@@ -9,7 +9,8 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuth } from '@/context/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { useNegocio, documentoValido } from '@/config/negocio'
-import { cx, money } from '@/utils/format'
+import { cx, money, ymd } from '@/utils/format'
+import { descargarCSV } from '@/utils/csv'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { construirTicketHtml, imprimirTicketHtml } from '@/utils/ticket'
 import { qrParaTicket } from '@/utils/qrTermico'
@@ -191,6 +192,33 @@ function GestionUsuarios() {
     }
   }
 
+  // Trae nombre/correo/rol de cada usuario y lo descarga en .csv. El correo
+  // no esta en la tabla perfiles (vive en auth.users, fuera del alcance de
+  // PostgREST) — por eso pasa por el RPC listar_usuarios en vez de leerse
+  // directo de la tabla. Nunca incluye contraseñas: no se pueden leer ni
+  // siquiera desde el servidor, porque no se guardan en texto legible en
+  // ningun lado (ver el comentario del RPC en schema.sql).
+  const [exportando, setExportando] = useState(false)
+  async function exportarUsuarios() {
+    setExportando(true)
+    try {
+      const { data, error } = await supabase.rpc('listar_usuarios')
+      if (error) throw new Error(error.message)
+      const filas: (string | number)[][] = [
+        ['Usuarios del sistema', ymd(new Date())],
+        [],
+        ['Nombre', 'Correo', 'Rol', 'Estado'],
+        ...(data ?? []).map((u) => [u.nombre, u.email, ETIQUETA_ROL[u.rol], u.activo ? 'Activo' : 'Inactivo']),
+      ]
+      descargarCSV(`usuarios_${ymd(new Date())}.csv`, filas)
+      toast.exito('Lista de usuarios descargada')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo exportar la lista de usuarios')
+    } finally {
+      setExportando(false)
+    }
+  }
+
   async function alternarActivo(u: Perfil) {
     setActualizandoId(u.id)
     try {
@@ -221,9 +249,20 @@ function GestionUsuarios() {
             solo Punto de venta, Inventario, Ventas y Caja.
           </p>
         </div>
-        <Button size="sm" onClick={() => setSheetAbierto(true)}>
-          <UserPlus className="size-4" /> Nuevo usuario
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportarUsuarios}
+            loading={exportando}
+            disabled={usuarios.length === 0}
+          >
+            <Download className="size-4" /> Exportar
+          </Button>
+          <Button size="sm" onClick={() => setSheetAbierto(true)}>
+            <UserPlus className="size-4" /> Nuevo usuario
+          </Button>
+        </div>
       </div>
       <CrearUsuarioSheet
         open={sheetAbierto}

@@ -418,6 +418,10 @@ export interface Database {
         Args: { p_alerta_id: string }
         Returns: AlertaArqueo
       }
+      listar_usuarios: {
+        Args: Record<string, never>
+        Returns: { id: string; nombre: string; email: string; rol: Rol; activo: boolean; creado_en: string }[]
+      }
     }
     Enums: {
       rol_usuario: Rol
