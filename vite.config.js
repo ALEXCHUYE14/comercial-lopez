@@ -37,7 +37,7 @@ export default defineConfig({
                 // cubierta por su propia regla de runtimeCaching mas abajo: la
                 // primera vez que alguien la use se guarda en su dispositivo, sin
                 // pedirla de nuevo despues.
-                globIgnores: ['**/img/**', '**/assets/xlsx-*.js'],
+                globIgnores: ['**/img/**', '**/assets/xlsx-*.js', '**/assets/jszip*.js'],
                 maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
                 // Borra las caches de versiones anteriores al activar el nuevo
                 // service worker, para que nunca sirva JS/CSS de un despliegue viejo.
@@ -82,6 +82,19 @@ export default defineConfig({
                         handler: 'CacheFirst',
                         options: {
                             cacheName: 'lib-xlsx',
+                            expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                            cacheableResponse: { statuses: [0, 200] },
+                        },
+                    },
+                    // Igual que xlsx: solo se usa al descargar/subir fotos en bloque.
+                    {
+                        urlPattern: function (_a) {
+                            var url = _a.url;
+                            return /\/assets\/jszip.*\.js$/.test(url.pathname);
+                        },
+                        handler: 'CacheFirst',
+                        options: {
+                            cacheName: 'lib-jszip',
                             expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 365 },
                             cacheableResponse: { statuses: [0, 200] },
                         },

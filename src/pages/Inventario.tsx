@@ -14,6 +14,7 @@ import {
   Printer,
   FileSpreadsheet,
   Upload,
+  Images,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
 import { useAuth } from '@/context/AuthContext'
@@ -25,9 +26,11 @@ import { ProductForm } from '@/components/inventory/ProductForm'
 import { StockAdjust } from '@/components/inventory/StockAdjust'
 import { ScanEntrada } from '@/components/inventory/ScanEntrada'
 import { ImportarInventario } from '@/components/inventory/ImportarInventario'
+import { ImportarFotos } from '@/components/inventory/ImportarFotos'
 import { money, cx, fechaHora, cantidad, etiquetaUnidad, ymd } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
 import { exportarInventarioExcel } from '@/utils/inventarioExcel'
+import { descargarFotosInventario } from '@/utils/inventarioFotos'
 import { desbloquearAudioScanner } from '@/utils/beep'
 import { esEan13Valido } from '@/utils/barcode'
 import { construirEtiquetasHtml } from '@/utils/etiqueta'
@@ -51,6 +54,8 @@ export function Inventario() {
   const [copiasEtiqueta, setCopiasEtiqueta] = useState('1')
   const [skuNuevo, setSkuNuevo] = useState<string | undefined>(undefined)
   const [importando, setImportando] = useState(false)
+  const [importandoFotos, setImportandoFotos] = useState(false)
+  const [descargandoFotos, setDescargandoFotos] = useState(false)
 
   const filtrados = useMemo(() => {
     const t = q.trim().toLowerCase()
@@ -103,6 +108,23 @@ export function Inventario() {
       toast.exito('Inventario descargado en Excel')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo generar el Excel')
+    }
+  }
+
+  async function exportarFotos() {
+    setDescargandoFotos(true)
+    try {
+      const r = await descargarFotosInventario(productos)
+      if (r.descargadas === 0) {
+        toast.error('Ningún producto tiene foto todavía.')
+        return
+      }
+      const detalle = r.fallidas.length > 0 ? ` (${r.fallidas.length} no se pudieron descargar)` : ''
+      toast.exito(`${r.descargadas} foto(s) descargadas en un .zip${detalle}`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudieron descargar las fotos')
+    } finally {
+      setDescargandoFotos(false)
     }
   }
 
@@ -176,6 +198,22 @@ export function Inventario() {
           {esAdmin && (
             <Button variant="outline" size="sm" onClick={() => setImportando(true)}>
               <Upload className="size-4" /> <span className="hidden sm:inline">Importar Excel</span>
+            </Button>
+          )}
+          {esAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={exportarFotos}
+              loading={descargandoFotos}
+              disabled={productos.length === 0}
+            >
+              <Images className="size-4" /> <span className="hidden sm:inline">Descargar fotos</span>
+            </Button>
+          )}
+          {esAdmin && (
+            <Button variant="outline" size="sm" onClick={() => setImportandoFotos(true)}>
+              <Upload className="size-4" /> <span className="hidden sm:inline">Subir fotos</span>
             </Button>
           )}
           {esAdmin && (
@@ -421,6 +459,12 @@ export function Inventario() {
       <ImportarInventario
         open={importando}
         onClose={() => setImportando(false)}
+        onListo={recargar}
+      />
+      <ImportarFotos
+        open={importandoFotos}
+        onClose={() => setImportandoFotos(false)}
+        productos={productos}
         onListo={recargar}
       />
 
