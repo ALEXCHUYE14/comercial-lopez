@@ -127,8 +127,20 @@ language plpgsql
 security definer set search_path = public
 as $$
 begin
-  if not public.es_admin() then
-    if new.rol is distinct from old.rol or new.activo is distinct from old.activo then
+  if new.rol is distinct from old.rol or new.activo is distinct from old.activo then
+    -- Excepcion de arranque: mientras no exista NINGUN administrador activo
+    -- todavia en todo el sistema, se deja pasar el cambio aunque quien lo
+    -- haga no sea administrador. Sin esta excepcion, el propio paso que este
+    -- script pide al final ("marca su rol como administrador ejecutando: ...
+    -- UPDATE ... desde el SQL Editor") queda bloqueado para siempre: ese
+    -- UPDATE se corre sin una sesion de usuario detras (auth.uid() da NULL
+    -- en el SQL Editor), asi que es_admin() nunca da verdadero y el candado
+    -- se traba a si mismo en el primer arranque de un proyecto nuevo. Una
+    -- vez que YA existe al menos un administrador activo, este atajo se
+    -- cierra solo y vuelve a exigirse ser administrador para cualquier
+    -- cambio de rol/estado — igual que antes.
+    if not public.es_admin()
+       and exists (select 1 from public.perfiles where rol = 'administrador' and activo = true) then
       raise exception 'Solo un administrador puede cambiar el rol o el estado de un usuario.';
     end if;
   end if;
