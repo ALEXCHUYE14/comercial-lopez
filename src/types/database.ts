@@ -391,6 +391,10 @@ export interface Database {
         }
         Returns: Producto
       }
+      importar_productos: {
+        Args: { p_filas: unknown }
+        Returns: { fila: number; sku: string; accion: string; mensaje: string | null }[]
+      }
       incrementar_caja: {
         Args: { p_caja_id: string; p_metodo: string; p_monto: number }
         Returns: void

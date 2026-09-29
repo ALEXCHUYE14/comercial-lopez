@@ -12,6 +12,8 @@ import {
   ScanLine,
   Tag,
   Printer,
+  FileSpreadsheet,
+  Upload,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
 import { useAuth } from '@/context/AuthContext'
@@ -22,8 +24,10 @@ import { useToast } from '@/components/ui/Toast'
 import { ProductForm } from '@/components/inventory/ProductForm'
 import { StockAdjust } from '@/components/inventory/StockAdjust'
 import { ScanEntrada } from '@/components/inventory/ScanEntrada'
+import { ImportarInventario } from '@/components/inventory/ImportarInventario'
 import { money, cx, fechaHora, cantidad, etiquetaUnidad, ymd } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
+import { exportarInventarioExcel } from '@/utils/inventarioExcel'
 import { desbloquearAudioScanner } from '@/utils/beep'
 import { esEan13Valido } from '@/utils/barcode'
 import { construirEtiquetasHtml } from '@/utils/etiqueta'
@@ -46,6 +50,7 @@ export function Inventario() {
   const [etiquetaProd, setEtiquetaProd] = useState<Producto | null>(null)
   const [copiasEtiqueta, setCopiasEtiqueta] = useState('1')
   const [skuNuevo, setSkuNuevo] = useState<string | undefined>(undefined)
+  const [importando, setImportando] = useState(false)
 
   const filtrados = useMemo(() => {
     const t = q.trim().toLowerCase()
@@ -90,6 +95,15 @@ export function Inventario() {
     ]
     descargarCSV(`inventario_${ymd(new Date())}.csv`, filas)
     toast.exito('Inventario descargado')
+  }
+
+  async function exportarExcel() {
+    try {
+      await exportarInventarioExcel(productos)
+      toast.exito('Inventario descargado en Excel')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo generar el Excel')
+    }
   }
 
   function abrirNuevo() {
@@ -152,10 +166,18 @@ export function Inventario() {
             {productos.length} productos · valorizado {money(totalValorizado)}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={exportarCSV} disabled={productos.length === 0}>
             <Download className="size-4" /> <span className="hidden sm:inline">Descargar</span>
           </Button>
+          <Button variant="outline" size="sm" onClick={exportarExcel} disabled={productos.length === 0}>
+            <FileSpreadsheet className="size-4" /> <span className="hidden sm:inline">Exportar Excel</span>
+          </Button>
+          {esAdmin && (
+            <Button variant="outline" size="sm" onClick={() => setImportando(true)}>
+              <Upload className="size-4" /> <span className="hidden sm:inline">Importar Excel</span>
+            </Button>
+          )}
           {esAdmin && (
             <Button
               variant="outline"
@@ -396,6 +418,11 @@ export function Inventario() {
         onNoEncontrado={crearDesdeEscaneo}
       />
       <KardexSheet producto={kardex} onClose={() => setKardex(null)} />
+      <ImportarInventario
+        open={importando}
+        onClose={() => setImportando(false)}
+        onListo={recargar}
+      />
 
       {/* Impresion de etiqueta de precio/codigo de barras */}
       <Sheet

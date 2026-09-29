@@ -1094,6 +1094,231 @@ end;
 $$;
 
 -- ----------------------------------------------------------------------------
+-- RPC 2b: IMPORTAR INVENTARIO DESDE EXCEL (alta y actualizacion masiva)
+-- ----------------------------------------------------------------------------
+-- Recibe las filas ya leidas de un archivo .xlsx (ver src/utils/inventarioExcel.ts,
+-- que hace el parseo en el navegador con la libreria "xlsx" y normaliza tipos
+-- antes de llamar aqui: numeros como number, SI/NO como boolean, celdas vacias
+-- como null — nunca texto vacio, para no confundir un "" con un 0 valido).
+-- Cada fila se procesa en su PROPIA sub-transaccion (bloque begin/exception
+-- anidado, equivalente a un SAVEPOINT): una fila mal formada queda reportada
+-- como error en el resultado, pero NO revierte ni bloquea las demas filas del
+-- archivo — asi un archivo de 200 productos con 1 fila con un dato invalido
+-- igual importa las otras 199.
+--
+-- Reglas (las mismas que ya aplican en el resto del sistema, ver ProductForm
+-- y ajustar_stock):
+--   - El SKU identifica la fila: si ya existe un producto con ese SKU, se
+--     ACTUALIZA; si no existe, se CREA.
+--   - stock_actual NUNCA se pisa en silencio al actualizar un producto
+--     existente (igual que la edicion manual del inventario, que tampoco lo
+--     toca): si la fila trae un stock distinto al actual, se registra como
+--     un movimiento 'ajuste' en el kardex, igual que un ajuste manual.
+--   - Una celda vacia (null) en la fila significa "no tocar este campo" al
+--     actualizar un producto existente, y "usar el valor por defecto de la
+--     columna" al crear uno nuevo.
+--   - La categoria se busca por nombre (sin importar mayusculas/espacios); si
+--     no existe, se crea sola.
+create or replace function public.importar_productos(p_filas jsonb)
+returns table (fila integer, sku text, accion text, mensaje text)
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_fila                jsonb;
+  v_nombre_admin         text;
+  v_prod                 public.productos%rowtype;
+  v_existe                boolean;
+  v_sku                   text;
+  v_nombre                text;
+  v_cat_nombre            text;
+  v_cat_id                uuid;
+  v_tipo_venta            text;
+  v_unidad                text;
+  v_precio_compra         numeric;
+  v_precio_venta          numeric;
+  v_precio_venta_caja     numeric;
+  v_stock_actual          numeric;
+  v_stock_minimo          numeric;
+  v_tiene_caja            boolean;
+  v_unidades_por_caja     integer;
+  v_tiene_saco            boolean;
+  v_kg_por_saco           numeric;
+  v_precio_venta_saco     numeric;
+  v_vence                 date;
+  v_activo                boolean;
+  v_fila_num              integer;
+  v_stock_previo          double precision;
+begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede importar el inventario.';
+  end if;
+
+  if p_filas is null or jsonb_typeof(p_filas) <> 'array' then
+    raise exception 'El archivo no tiene filas para importar.';
+  end if;
+
+  select nombre into v_nombre_admin from public.perfiles where id = auth.uid();
+
+  for v_fila in select * from jsonb_array_elements(p_filas)
+  loop
+    begin -- sub-transaccion por fila (SAVEPOINT implicito del bloque begin/exception)
+      v_fila_num := coalesce((v_fila->>'fila')::integer, 0);
+      v_sku      := nullif(btrim(coalesce(v_fila->>'sku', '')), '');
+      v_nombre   := nullif(btrim(coalesce(v_fila->>'nombre', '')), '');
+
+      if v_sku is null then
+        raise exception 'Falta el SKU.';
+      end if;
+      if char_length(v_sku) > 60 then
+        raise exception 'El SKU es demasiado largo (maximo 60 caracteres).';
+      end if;
+
+      -- "productos.sku" calificado a proposito: "sku" a secas es ambiguo aqui
+      -- porque tambien es el nombre de un parametro de salida de esta funcion.
+      select * into v_prod from public.productos where productos.sku = v_sku for update;
+      v_existe := found;
+
+      if v_nombre is null and not v_existe then
+        raise exception 'Falta el nombre (obligatorio para un producto nuevo).';
+      end if;
+      v_nombre := coalesce(v_nombre, v_prod.nombre);
+
+      v_tipo_venta := nullif(btrim(lower(coalesce(v_fila->>'tipo_venta', ''))), '');
+      v_tipo_venta := coalesce(v_tipo_venta, v_prod.tipo_venta, 'unidad');
+      if v_tipo_venta not in ('unidad', 'granel') then
+        raise exception 'Tipo de venta "%" invalido: debe ser "unidad" o "granel".', v_tipo_venta;
+      end if;
+
+      v_unidad := nullif(btrim(coalesce(v_fila->>'unidad', '')), '');
+      v_unidad := coalesce(v_unidad, v_prod.unidad, 'unidad');
+
+      v_precio_compra := coalesce((v_fila->>'precio_compra')::numeric, v_prod.precio_compra, 0);
+      v_precio_venta  := coalesce((v_fila->>'precio_venta')::numeric, v_prod.precio_venta, 0);
+      if v_precio_compra < 0 or v_precio_venta < 0 then
+        raise exception 'Los precios no pueden ser negativos.';
+      end if;
+      if not v_existe and v_precio_venta <= 0 then
+        raise exception 'Indica el precio de venta (mayor a 0) para un producto nuevo.';
+      end if;
+
+      v_precio_venta_caja := coalesce((v_fila->>'precio_venta_caja')::numeric, v_prod.precio_venta_caja);
+
+      -- null = "no tocar" (si es una actualizacion, mas abajo); una fila
+      -- nueva sin stock indicado arranca en 0 (default de la columna).
+      v_stock_actual := (v_fila->>'stock_actual')::numeric;
+      if v_stock_actual is not null and v_stock_actual < 0 then
+        raise exception 'El stock no puede ser negativo.';
+      end if;
+
+      v_stock_minimo := coalesce((v_fila->>'stock_minimo')::numeric, v_prod.stock_minimo, 5);
+      if v_stock_minimo < 0 then
+        raise exception 'El stock minimo no puede ser negativo.';
+      end if;
+
+      v_tiene_caja := coalesce((v_fila->>'tiene_caja')::boolean, v_prod.tiene_caja, false);
+      v_unidades_por_caja := coalesce((v_fila->>'unidades_por_caja')::integer, v_prod.unidades_por_caja);
+
+      v_tiene_saco  := coalesce((v_fila->>'tiene_saco')::boolean, v_prod.tiene_saco, false);
+      v_kg_por_saco := coalesce((v_fila->>'kg_por_saco')::numeric, v_prod.kg_por_saco);
+      v_precio_venta_saco := coalesce((v_fila->>'precio_venta_saco')::numeric, v_prod.precio_venta_saco);
+
+      -- Mismas reglas que los constraints de la tabla productos: granel no
+      -- vende por caja, "por saco" solo aplica a granel.
+      if v_tipo_venta = 'granel' then
+        v_tiene_caja := false;
+        v_unidades_por_caja := null;
+        v_precio_venta_caja := null;
+      else
+        v_tiene_saco := false;
+        v_kg_por_saco := null;
+        v_precio_venta_saco := null;
+      end if;
+      if v_tiene_caja and (v_unidades_por_caja is null or v_unidades_por_caja <= 0) then
+        raise exception 'Si "tiene caja" es SI, indica las unidades por caja (mayor a 0).';
+      end if;
+      if v_tiene_saco and (v_kg_por_saco is null or v_kg_por_saco <= 0) then
+        raise exception 'Si "tiene saco" es SI, indica los kg por saco (mayor a 0).';
+      end if;
+
+      v_vence  := coalesce((v_fila->>'vence')::date, v_prod.fecha_vencimiento);
+      v_activo := coalesce((v_fila->>'activo')::boolean, v_prod.activo, true);
+
+      -- Categoria: se busca por nombre (sin importar mayusculas/espacios); si
+      -- no existe y se indico una, se crea sola.
+      v_cat_nombre := nullif(btrim(coalesce(v_fila->>'categoria', '')), '');
+      if v_cat_nombre is not null then
+        select id into v_cat_id from public.categorias
+          where lower(btrim(categorias.nombre)) = lower(v_cat_nombre) limit 1;
+        if v_cat_id is null then
+          insert into public.categorias (nombre) values (v_cat_nombre)
+            on conflict (nombre) do update set nombre = excluded.nombre
+            returning id into v_cat_id;
+        end if;
+      elsif v_existe then
+        v_cat_id := v_prod.categoria_id; -- actualizando y sin categoria en la fila: se conserva
+      else
+        v_cat_id := null;
+      end if;
+
+      if v_existe then
+        -- ACTUALIZAR: stock_actual nunca se pisa en silencio (ver cabecera).
+        if v_stock_actual is not null and v_stock_actual <> v_prod.stock_actual then
+          v_stock_previo := v_prod.stock_actual;
+          insert into public.movimientos_inventario (
+            producto_id, producto_nombre, tipo, cantidad,
+            stock_previo, stock_nuevo, motivo, usuario_id, usuario_nombre
+          ) values (
+            v_prod.id, v_nombre, 'ajuste', v_stock_actual - v_stock_previo,
+            v_stock_previo, v_stock_actual,
+            'Importacion de inventario (fila ' || v_fila_num || ')', auth.uid(), v_nombre_admin
+          );
+        else
+          v_stock_actual := v_prod.stock_actual;
+        end if;
+
+        update public.productos set
+          nombre = v_nombre, categoria_id = v_cat_id, tipo_venta = v_tipo_venta, unidad = v_unidad,
+          precio_compra = v_precio_compra, precio_venta = v_precio_venta, precio_venta_caja = v_precio_venta_caja,
+          stock_actual = v_stock_actual, stock_minimo = v_stock_minimo,
+          tiene_caja = v_tiene_caja, unidades_por_caja = v_unidades_por_caja,
+          tiene_saco = v_tiene_saco, kg_por_saco = v_kg_por_saco, precio_venta_saco = v_precio_venta_saco,
+          fecha_vencimiento = v_vence, activo = v_activo
+        where id = v_prod.id;
+
+        fila := v_fila_num; sku := v_sku; accion := 'actualizado'; mensaje := null;
+        return next;
+      else
+        -- CREAR
+        insert into public.productos (
+          sku, nombre, categoria_id, tipo_venta, unidad,
+          precio_compra, precio_venta, precio_venta_caja,
+          stock_actual, stock_minimo,
+          tiene_caja, unidades_por_caja, tiene_saco, kg_por_saco, precio_venta_saco,
+          fecha_vencimiento, activo
+        ) values (
+          v_sku, v_nombre, v_cat_id, v_tipo_venta, v_unidad,
+          v_precio_compra, v_precio_venta, v_precio_venta_caja,
+          coalesce(v_stock_actual, 0), v_stock_minimo,
+          v_tiene_caja, v_unidades_por_caja, v_tiene_saco, v_kg_por_saco, v_precio_venta_saco,
+          v_vence, v_activo
+        );
+
+        fila := v_fila_num; sku := v_sku; accion := 'creado'; mensaje := null;
+        return next;
+      end if;
+
+    exception when others then
+      fila := v_fila_num; sku := coalesce(v_sku, ''); accion := 'error'; mensaje := sqlerrm;
+      return next;
+    end;
+  end loop;
+
+  return;
+end;
+$$;
+
+-- ----------------------------------------------------------------------------
 -- RPC 3: ANULAR VENTA - repone stock, revierte caja y deuda, y marca anulada
 -- ----------------------------------------------------------------------------
 -- Quien puede anular:

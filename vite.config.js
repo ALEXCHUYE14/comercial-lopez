@@ -29,7 +29,15 @@ export default defineConfig({
                 globPatterns: ['**/*.{js,css,html,svg,png,woff2,mp3}'],
                 // Las fotos de negocio (logo/tienda) no se precachean: pueden pesar
                 // varios MB y no son parte del app shell; se sirven por red normal.
-                globIgnores: ['**/img/**'],
+                // "xlsx-*.js" (la libreria de Excel del inventario, ~400KB) tampoco:
+                // se carga con import() dinamico SOLO cuando alguien realmente usa
+                // Exportar/Importar Excel, que en la practica es poca gente y pocas
+                // veces al mes — precachearla de entrada la bajaria a CADA
+                // dispositivo de CADA cajero, sin que la mayoria la use nunca. Queda
+                // cubierta por su propia regla de runtimeCaching mas abajo: la
+                // primera vez que alguien la use se guarda en su dispositivo, sin
+                // pedirla de nuevo despues.
+                globIgnores: ['**/img/**', '**/assets/xlsx-*.js'],
                 maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
                 // Borra las caches de versiones anteriores al activar el nuevo
                 // service worker, para que nunca sirva JS/CSS de un despliegue viejo.
@@ -61,6 +69,20 @@ export default defineConfig({
                         options: {
                             cacheName: 'supabase-storage-imagenes',
                             expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 365 },
+                            cacheableResponse: { statuses: [0, 200] },
+                        },
+                    },
+                    // La libreria de Excel (ver globIgnores arriba): se guarda en el
+                    // dispositivo la primera vez que se usa, no antes.
+                    {
+                        urlPattern: function (_a) {
+                            var url = _a.url;
+                            return /\/assets\/xlsx-.*\.js$/.test(url.pathname);
+                        },
+                        handler: 'CacheFirst',
+                        options: {
+                            cacheName: 'lib-xlsx',
+                            expiration: { maxEntries: 2, maxAgeSeconds: 60 * 60 * 24 * 365 },
                             cacheableResponse: { statuses: [0, 200] },
                         },
                     },
