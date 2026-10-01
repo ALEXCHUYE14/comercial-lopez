@@ -23,6 +23,7 @@ const ENCABEZADOS = [
   'Stock actual', 'Stock minimo',
   'Tiene caja (SI/NO)', 'Unidades por caja',
   'Tiene saco (SI/NO)', 'Kg por saco', 'Precio venta saco',
+  'Presentaciones (JSON)',
   'Vence (AAAA-MM-DD)', 'Activo (SI/NO)',
 ] as const
 
@@ -56,13 +57,24 @@ function numeroSeguro(v: number | null | undefined): number | '' {
   return Number.isFinite(v) ? v : 0
 }
 
-/** Descarga el inventario completo como .xlsx, con todas las columnas que
- * usa el sistema — pensado tanto para respaldo como para volver a subirlo
- * despues de editarlo (agregar filas nuevas, corregir precios, etc.). No
- * incluye la foto del producto (es un archivo aparte, no una celda de Excel)
- * ni las presentaciones adicionales (arroba, docena, ...), que son una
- * configuracion mas compleja que una sola celda — esas se siguen editando
- * desde "Nuevo producto"/"Editar" en el propio sistema. */
+// Las presentaciones adicionales (arroba, docena, Bolsa, Paquete Maestro...)
+// son un arreglo, no un valor simple — se guardan como texto JSON en una sola
+// celda. Un producto SIN presentaciones deja la celda vacia (no "[]"), para
+// que una celda vacia siga significando "no tocar" al volver a importar —
+// igual que el resto de columnas — y nunca borre presentaciones que se le
+// hayan agregado al producto despues de exportar este archivo.
+function presentacionesACelda(p: Producto): string {
+  if (!p.presentaciones || p.presentaciones.length === 0) return ''
+  return textoSeguro(JSON.stringify(p.presentaciones))
+}
+
+/** Descarga el inventario completo como .xlsx, con TODAS las columnas de
+ * configuracion de cada producto — pensado tanto para respaldo como para
+ * volver a subirlo despues de editarlo (agregar filas nuevas, corregir
+ * precios, cambiar presentaciones, etc.) sin perder ningun dato. Lo unico
+ * que no incluye es la foto del producto: es un archivo binario, no un
+ * valor de celda, y ya tiene su propio respaldo dedicado ("Descargar fotos"
+ * / "Subir fotos"), mas confiable que guardar solo la URL en una celda. */
 export async function exportarInventarioExcel(productos: Producto[]): Promise<void> {
   const XLSX = await import('xlsx')
   const filas = [
@@ -83,6 +95,7 @@ export async function exportarInventarioExcel(productos: Producto[]): Promise<vo
       siNo(p.tiene_saco),
       numeroSeguro(p.kg_por_saco),
       numeroSeguro(p.precio_venta_saco),
+      presentacionesACelda(p),
       textoSeguro(p.fecha_vencimiento ?? ''),
       siNo(p.activo),
     ]),
@@ -113,6 +126,12 @@ export type FilaInventario = {
   tiene_saco: boolean | null
   kg_por_saco: number | null
   precio_venta_saco: number | null
+  /** Texto JSON tal cual venia en la celda (ej. '[{"clave":"arroba",...}]'),
+   * o null si la celda estaba vacia ("no tocar" al actualizar). Se valida y
+   * se convierte a jsonb en el servidor (ver importar_productos en
+   * schema.sql), no aqui — asi una presentacion mal formada se reporta como
+   * el error de ESA fila en vez de tumbar la lectura de todo el archivo. */
+  presentaciones: string | null
   vence: string | null
   activo: boolean | null
 }
@@ -144,6 +163,8 @@ const ALIAS: Record<string, keyof FilaInventario> = {
   'kg por saco': 'kg_por_saco',
   'precio venta saco': 'precio_venta_saco',
   'precio saco': 'precio_venta_saco',
+  'presentaciones (json)': 'presentaciones',
+  presentaciones: 'presentaciones',
   'vence (aaaa-mm-dd)': 'vence',
   vence: 'vence',
   'fecha vencimiento': 'vence',
@@ -226,6 +247,7 @@ export async function leerInventarioExcel(archivo: File): Promise<FilaInventario
       stock_actual: null, stock_minimo: null,
       tiene_caja: null, unidades_por_caja: null,
       tiene_saco: null, kg_por_saco: null, precio_venta_saco: null,
+      presentaciones: null,
       vence: null, activo: null,
     }
     for (const [encabezadoOriginal, valor] of Object.entries(registro)) {
@@ -254,7 +276,7 @@ export async function descargarPlantillaInventario(): Promise<void> {
   const XLSX = await import('xlsx')
   const filas = [
     ENCABEZADOS as unknown as string[],
-    ['7501055300464', 'Coca Cola 500ml', 'Bebidas', 'unidad', 'unidad', 1.8, 3, '', 48, 12, 'NO', '', 'NO', '', '', '', 'SI'],
+    ['7501055300464', 'Coca Cola 500ml', 'Bebidas', 'unidad', 'unidad', 1.8, 3, '', 48, 12, 'NO', '', 'NO', '', '', '', '', 'SI'],
   ]
   const hoja = XLSX.utils.aoa_to_sheet(filas)
   hoja['!cols'] = ENCABEZADOS.map((h) => ({ wch: Math.max(h.length, 14) }))

@@ -1157,6 +1157,9 @@ declare
   v_tiene_saco            boolean;
   v_kg_por_saco           numeric;
   v_precio_venta_saco     numeric;
+  v_presentaciones_txt    text;
+  v_presentaciones        jsonb;
+  v_pres_item             jsonb;
   v_vence                 date;
   v_activo                boolean;
   v_fila_num              integer;
@@ -1253,6 +1256,39 @@ begin
         raise exception 'Si "tiene saco" es SI, indica los kg por saco (mayor a 0).';
       end if;
 
+      -- Presentaciones adicionales (arroba, docena, Bolsa, Paquete Maestro...):
+      -- celda vacia = no tocar (conserva las que ya tenia el producto, o '[]'
+      -- si es nuevo); si trae texto, debe ser un arreglo JSON valido y cada
+      -- presentacion debe pasar la MISMA validacion que presentacion_producto()
+      -- exige al momento de vender (clave presente, factor > 0, precio >= 0) —
+      -- si no, se rechaza con el mismo detalle que da esa funcion, para que el
+      -- error sea claro en vez de dejar guardada una presentacion inservible.
+      v_presentaciones_txt := nullif(btrim(coalesce(v_fila->>'presentaciones', '')), '');
+      if v_presentaciones_txt is not null then
+        begin
+          v_presentaciones := v_presentaciones_txt::jsonb;
+        exception when others then
+          raise exception 'Presentaciones: el texto no es un JSON valido.';
+        end;
+        if jsonb_typeof(v_presentaciones) <> 'array' then
+          raise exception 'Presentaciones: debe ser un arreglo JSON, ej. [{"clave":"arroba","nombre":"Arroba","factor":11.5,"precio":20}].';
+        end if;
+        for v_pres_item in select * from jsonb_array_elements(v_presentaciones)
+        loop
+          if coalesce(v_pres_item->>'clave', '') = '' then
+            raise exception 'Presentaciones: cada presentacion necesita "clave".';
+          end if;
+          if coalesce((v_pres_item->>'factor')::numeric, 0) <= 0 then
+            raise exception 'Presentaciones: "%" tiene un factor invalido (debe ser mayor a 0).', v_pres_item->>'clave';
+          end if;
+          if coalesce((v_pres_item->>'precio')::numeric, -1) < 0 then
+            raise exception 'Presentaciones: "%" tiene un precio invalido.', v_pres_item->>'clave';
+          end if;
+        end loop;
+      else
+        v_presentaciones := null;
+      end if;
+
       v_vence  := coalesce((v_fila->>'vence')::date, v_prod.fecha_vencimiento);
       v_activo := coalesce((v_fila->>'activo')::boolean, v_prod.activo, true);
 
@@ -1295,6 +1331,7 @@ begin
           stock_actual = v_stock_actual, stock_minimo = v_stock_minimo,
           tiene_caja = v_tiene_caja, unidades_por_caja = v_unidades_por_caja,
           tiene_saco = v_tiene_saco, kg_por_saco = v_kg_por_saco, precio_venta_saco = v_precio_venta_saco,
+          presentaciones = coalesce(v_presentaciones, productos.presentaciones),
           fecha_vencimiento = v_vence, activo = v_activo
         where id = v_prod.id;
 
@@ -1307,13 +1344,13 @@ begin
           precio_compra, precio_venta, precio_venta_caja,
           stock_actual, stock_minimo,
           tiene_caja, unidades_por_caja, tiene_saco, kg_por_saco, precio_venta_saco,
-          fecha_vencimiento, activo
+          presentaciones, fecha_vencimiento, activo
         ) values (
           v_sku, v_nombre, v_cat_id, v_tipo_venta, v_unidad,
           v_precio_compra, v_precio_venta, v_precio_venta_caja,
           coalesce(v_stock_actual, 0), v_stock_minimo,
           v_tiene_caja, v_unidades_por_caja, v_tiene_saco, v_kg_por_saco, v_precio_venta_saco,
-          v_vence, v_activo
+          coalesce(v_presentaciones, '[]'::jsonb), v_vence, v_activo
         );
 
         fila := v_fila_num; sku := v_sku; accion := 'creado'; mensaje := null;
