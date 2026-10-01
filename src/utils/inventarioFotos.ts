@@ -9,11 +9,39 @@ import { ymd } from '@/utils/format'
 import type { Producto } from '@/types/database'
 
 const CONCURRENCIA = 6
+const INTENTOS_MAX = 4
+const TIMEOUT_MS = 20_000
 
 function extensionDeUrl(url: string): string {
   const limpio = url.split('?')[0]
   const m = /\.([a-zA-Z0-9]{2,5})$/.exec(limpio)
   return m ? m[1].toLowerCase() : 'jpg'
+}
+
+function esperar(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Descarga una URL con reintentos y timeout: con 600+ fotos seguidas, el
+ * CDN de Storage a veces corta o demora alguna de forma pasajera. Sin
+ * reintento, esas se perdian como "fallidas" aunque la foto sí existe. */
+async function fetchConReintentos(url: string): Promise<Blob> {
+  let ultimoError: unknown
+  for (let intento = 1; intento <= INTENTOS_MAX; intento++) {
+    const control = new AbortController()
+    const corte = setTimeout(() => control.abort(), TIMEOUT_MS)
+    try {
+      const res = await fetch(url, { signal: control.signal })
+      if (!res.ok) throw new Error(String(res.status))
+      return await res.blob()
+    } catch (e) {
+      ultimoError = e
+      if (intento < INTENTOS_MAX) await esperar(500 * intento)
+    } finally {
+      clearTimeout(corte)
+    }
+  }
+  throw ultimoError
 }
 
 export type ResultadoDescargaFotos = { descargadas: number; sinFoto: number; fallidas: string[] }
@@ -34,9 +62,7 @@ export async function descargarFotosInventario(
 
   async function descargarUna(p: Producto) {
     try {
-      const res = await fetch(p.image_url as string)
-      if (!res.ok) throw new Error(String(res.status))
-      const blob = await res.blob()
+      const blob = await fetchConReintentos(p.image_url as string)
       const ext = extensionDeUrl(p.image_url as string)
       zip.file(`${p.sku}.${ext}`, blob)
     } catch {
