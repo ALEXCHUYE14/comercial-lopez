@@ -14,8 +14,12 @@ import {
   AlertTriangle,
   Banknote,
   Smartphone,
+  Download,
+  Upload,
 } from 'lucide-react'
 import { useClientes, DIAS_DEUDA_VENCIDA } from '@/hooks/useClientes'
+import { ImportarClientes } from '@/components/clientes/ImportarClientes'
+import { exportarClientesExcel } from '@/utils/clientesExcel'
 import { useAuth } from '@/context/AuthContext'
 import { useCajaCtx } from '@/context/CajaContext'
 import { getNegocio } from '@/config/negocio'
@@ -33,7 +37,7 @@ const METODOS_ABONO: { id: MetodoAbono; label: string; icon: typeof Banknote }[]
 ]
 
 export function Clientes() {
-  const { clientes, diasSinPago, cargando, crear, actualizar, eliminar, registrarAbono, obtenerPagos } =
+  const { clientes, diasSinPago, cargando, cargar, crear, actualizar, eliminar, registrarAbono, obtenerPagos } =
     useClientes()
   const { esAdmin } = useAuth()
   const { caja, recargar: recargarCaja } = useCajaCtx()
@@ -51,6 +55,8 @@ export function Clientes() {
   const [montoAbono, setMontoAbono] = useState('')
   const [notaAbono, setNotaAbono] = useState('')
   const [metodoAbono, setMetodoAbono] = useState<MetodoAbono>('efectivo')
+  const [importarOpen, setImportarOpen] = useState(false)
+  const [exportando, setExportando] = useState(false)
 
   const totalDeuda = useMemo(
     () => clientes.reduce((s, c) => s + c.deuda_actual, 0),
@@ -69,6 +75,18 @@ export function Clientes() {
     setEditando(null)
     setF(VACIO)
     setFormOpen(true)
+  }
+
+  async function exportar() {
+    setExportando(true)
+    try {
+      await exportarClientesExcel(clientes)
+      toast.exito('Clientes exportados a Excel')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo generar el Excel')
+    } finally {
+      setExportando(false)
+    }
   }
 
   function abrirEditar(c: ClienteCredito) {
@@ -207,10 +225,20 @@ export function Clientes() {
           </p>
         </div>
         {esAdmin && (
-          <Button variant="primary" onClick={abrirNuevo}>
-            <Plus className="size-[18px]" />
-            <span className="hidden sm:inline">Nuevo cliente</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" loading={exportando} disabled={exportando || clientes.length === 0} onClick={exportar}>
+              <Download className="size-4" />
+              <span className="hidden sm:inline">Exportar</span>
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setImportarOpen(true)}>
+              <Upload className="size-4" />
+              <span className="hidden sm:inline">Importar</span>
+            </Button>
+            <Button variant="primary" onClick={abrirNuevo}>
+              <Plus className="size-[18px]" />
+              <span className="hidden sm:inline">Nuevo cliente</span>
+            </Button>
+          </div>
         )}
       </div>
 
@@ -399,6 +427,8 @@ export function Clientes() {
           </ul>
         )}
       </Card>
+
+      <ImportarClientes open={importarOpen} onClose={() => setImportarOpen(false)} onListo={cargar} />
 
       {/* Sheet: formulario de cliente */}
       <Sheet

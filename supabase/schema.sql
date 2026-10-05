@@ -2433,6 +2433,195 @@ begin
 end;
 $$;
 
+-- ----------------------------------------------------------------------------
+-- RPC 12: IMPORTAR CLIENTES DESDE EXCEL (todo o nada, solo administrador)
+-- ----------------------------------------------------------------------------
+-- Valida TODAS las filas antes de escribir ninguna. Si alguna tiene error, no
+-- se guarda nada y se devuelven los errores por numero de fila. Si todas son
+-- validas, las escribe en esta misma funcion: como toda la funcion corre en
+-- una sola transaccion, cualquier fallo a mitad de camino revierte todo.
+--   - Con ID: actualiza ese cliente (el ID debe existir).
+--   - Sin ID: crea un cliente nuevo; no permite repetir nombre + telefono de
+--     un cliente activo ni de otra fila del mismo archivo.
+--   - "deuda_actual" nunca se importa: el saldo solo lo cambian los cobros y
+--     fiados, asi un Excel viejo no puede pisar la deuda real.
+--   - Celda vacia en Telefono o Direccion = sin dato (null). En Limite o Activo
+--     vacia = conserva el valor actual si es actualizacion.
+create or replace function public.importar_clientes(p_filas jsonb)
+returns jsonb
+language plpgsql
+security definer set search_path = public
+as $$
+declare
+  v_fila          jsonb;
+  v_norm          jsonb;
+  v_errores       jsonb := '[]'::jsonb;
+  v_normalizadas  jsonb := '[]'::jsonb;
+  v_ids           uuid[] := '{}';
+  v_claves        text[] := '{}';
+  v_nro_fila      integer;
+  v_id_txt        text;
+  v_id            uuid;
+  v_existente     public.clientes_credito%rowtype;
+  v_existe        boolean;
+  v_nombre        text;
+  v_tel           text;
+  v_dir           text;
+  v_limite_txt    text;
+  v_limite        numeric(10,2);
+  v_activo_txt    text;
+  v_activo        boolean;
+  v_clave         text;
+  v_mensaje       text;
+  v_creados       integer := 0;
+  v_actualizados  integer := 0;
+begin
+  if not public.es_admin() then
+    raise exception 'Solo un administrador puede importar clientes.';
+  end if;
+  if p_filas is null or jsonb_typeof(p_filas) <> 'array' then
+    raise exception 'El archivo no tiene un formato valido.';
+  end if;
+
+  for v_fila in select value from jsonb_array_elements(p_filas) loop
+    v_nro_fila := coalesce(nullif(v_fila->>'fila', '')::integer, 0);
+    v_mensaje := null;
+    begin
+      v_id_txt     := nullif(btrim(coalesce(v_fila->>'id', '')), '');
+      v_nombre     := regexp_replace(btrim(coalesce(v_fila->>'nombre', '')), '\s+', ' ', 'g');
+      v_tel        := nullif(btrim(coalesce(v_fila->>'telefono', '')), '');
+      v_dir        := nullif(btrim(coalesce(v_fila->>'direccion', '')), '');
+      v_limite_txt := nullif(btrim(coalesce(v_fila->>'limite_credito', '')), '');
+      v_activo_txt := nullif(btrim(coalesce(v_fila->>'activo', '')), '');
+
+      v_id := null;
+      v_existe := false;
+      if v_id_txt is not null then
+        begin
+          v_id := v_id_txt::uuid;
+        exception when others then
+          raise exception 'El ID "%" no es valido.', v_id_txt;
+        end;
+        select * into v_existente from public.clientes_credito where id = v_id;
+        v_existe := found;
+        if not v_existe then
+          raise exception 'El ID % no existe en Clientes. Deja la columna ID vacia para crear un cliente nuevo.', v_id;
+        end if;
+        if v_id = any(v_ids) then
+          raise exception 'El ID % aparece mas de una vez en el archivo.', v_id;
+        end if;
+        v_ids := v_ids || v_id;
+      end if;
+
+      if char_length(v_nombre) < 2 or char_length(v_nombre) > 80 then
+        raise exception 'El nombre es obligatorio (entre 2 y 80 caracteres).';
+      end if;
+
+      if v_tel is not null and v_tel !~ '^[0-9+() -]{6,20}$' then
+        raise exception 'El telefono no es valido (solo numeros, +, espacios, parentesis o guion; 6 a 20 caracteres).';
+      end if;
+
+      if v_dir is not null and char_length(v_dir) > 120 then
+        raise exception 'La direccion es demasiado larga (maximo 120 caracteres).';
+      end if;
+
+      if v_limite_txt is null and not v_existe then
+        raise exception 'El limite de credito es obligatorio para un cliente nuevo.';
+      end if;
+      if v_limite_txt is not null then
+        if v_limite_txt !~ '^[0-9]+([.][0-9]+)?$' then
+          raise exception 'El limite de credito debe ser un numero.';
+        end if;
+        v_limite := round(v_limite_txt::numeric, 2);
+        if v_limite <= 0 or v_limite > 100000 then
+          raise exception 'El limite de credito debe estar entre 0.01 y 100000.';
+        end if;
+      else
+        v_limite := v_existente.limite_credito;
+      end if;
+
+      if v_activo_txt is null then
+        v_activo := case when v_existe then v_existente.activo else true end;
+      elsif lower(v_activo_txt) = 'true' then
+        v_activo := true;
+      elsif lower(v_activo_txt) = 'false' then
+        v_activo := false;
+      else
+        raise exception 'El estado (Activo) debe ser SI o NO.';
+      end if;
+
+      if v_activo then
+        v_clave := lower(v_nombre) || '|' || regexp_replace(coalesce(v_tel, ''), '\s', '', 'g');
+        if v_clave = any(v_claves) then
+          raise exception 'Otra fila de este archivo tiene el mismo nombre y telefono.';
+        end if;
+        if exists (
+          select 1 from public.clientes_credito c
+          where c.activo = true
+            and (v_id is null or c.id <> v_id)
+            and lower(regexp_replace(btrim(c.nombre), '\s+', ' ', 'g')) = lower(v_nombre)
+            and coalesce(regexp_replace(c.telefono, '\s', '', 'g'), '')
+                = coalesce(regexp_replace(v_tel, '\s', '', 'g'), '')
+        ) then
+          raise exception 'Ya existe un cliente activo con ese nombre y telefono.';
+        end if;
+        v_claves := v_claves || v_clave;
+      end if;
+
+      v_norm := jsonb_build_object(
+        'id', v_id,
+        'nombre', v_nombre,
+        'telefono', v_tel,
+        'direccion', v_dir,
+        'limite', v_limite,
+        'activo', v_activo
+      );
+      v_normalizadas := v_normalizadas || v_norm;
+    exception when others then
+      v_mensaje := sqlerrm;
+    end;
+
+    if v_mensaje is not null then
+      v_errores := v_errores || jsonb_build_object(
+        'fila', v_nro_fila,
+        'nombre', coalesce(v_fila->>'nombre', ''),
+        'mensaje', v_mensaje
+      );
+    end if;
+  end loop;
+
+  if jsonb_array_length(v_errores) > 0 then
+    return jsonb_build_object('ok', false, 'creados', 0, 'actualizados', 0, 'errores', v_errores);
+  end if;
+
+  for v_norm in select value from jsonb_array_elements(v_normalizadas) loop
+    if v_norm->>'id' is null then
+      insert into public.clientes_credito (nombre, telefono, direccion, limite_credito, deuda_actual, activo)
+      values (
+        v_norm->>'nombre',
+        v_norm->>'telefono',
+        v_norm->>'direccion',
+        (v_norm->>'limite')::numeric,
+        0,
+        (v_norm->>'activo')::boolean
+      );
+      v_creados := v_creados + 1;
+    else
+      update public.clientes_credito
+         set nombre         = v_norm->>'nombre',
+             telefono       = v_norm->>'telefono',
+             direccion      = v_norm->>'direccion',
+             limite_credito = (v_norm->>'limite')::numeric,
+             activo         = (v_norm->>'activo')::boolean
+       where id = (v_norm->>'id')::uuid;
+      v_actualizados := v_actualizados + 1;
+    end if;
+  end loop;
+
+  return jsonb_build_object('ok', true, 'creados', v_creados, 'actualizados', v_actualizados, 'errores', '[]'::jsonb);
+end;
+$$;
+
 -- ============================================================================
 -- ROW LEVEL SECURITY
 -- ============================================================================

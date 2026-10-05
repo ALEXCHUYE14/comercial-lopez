@@ -418,6 +418,15 @@ export interface Database {
         Args: { p_alerta_id: string }
         Returns: AlertaArqueo
       }
+      importar_clientes: {
+        Args: { p_filas: unknown }
+        Returns: {
+          ok: boolean
+          creados: number
+          actualizados: number
+          errores: { fila: number; nombre: string; mensaje: string }[]
+        }
+      }
       listar_usuarios: {
         Args: Record<string, never>
         Returns: { id: string; nombre: string; email: string; rol: Rol; activo: boolean; creado_en: string }[]
