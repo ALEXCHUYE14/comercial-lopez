@@ -29,6 +29,7 @@ import { ImportarFotos } from '@/components/inventory/ImportarFotos'
 import { money, cx, fechaHora, cantidad, etiquetaUnidad } from '@/utils/format'
 import { exportarInventarioExcel } from '@/utils/inventarioExcel'
 import { descargarFotosInventario } from '@/utils/inventarioFotos'
+import { optimizarFotosInventario } from '@/utils/optimizarFotos'
 import { desbloquearAudioScanner } from '@/utils/beep'
 import { esEan13Valido } from '@/utils/barcode'
 import { construirEtiquetasHtml } from '@/utils/etiqueta'
@@ -54,6 +55,7 @@ export function Inventario() {
   const [importando, setImportando] = useState(false)
   const [importandoFotos, setImportandoFotos] = useState(false)
   const [descargandoFotos, setDescargandoFotos] = useState(false)
+  const [optimizandoFotos, setOptimizandoFotos] = useState(false)
 
   const filtrados = useMemo(() => {
     const t = q.trim().toLowerCase()
@@ -93,6 +95,23 @@ export function Inventario() {
       toast.error(e instanceof Error ? e.message : 'No se pudieron descargar las fotos')
     } finally {
       setDescargandoFotos(false)
+    }
+  }
+
+  async function optimizarFotos() {
+    if (!window.confirm('Se recomprimirán las fotos existentes a un tamaño menor. Puede tardar unos minutos. ¿Continuar?')) return
+    setOptimizandoFotos(true)
+    try {
+      const r = await optimizarFotosInventario(productos)
+      const partes = [`${r.optimizadas} optimizada(s)`, `${r.omitidas} ya estaban livianas`]
+      if (r.fallidas.length > 0) partes.push(`${r.fallidas.length} con error`)
+      if (r.fallidas.length > 0) toast.error(partes.join(' · '))
+      else toast.exito(partes.join(' · '))
+      await recargar()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudieron optimizar las fotos')
+    } finally {
+      setOptimizandoFotos(false)
     }
   }
 
@@ -179,6 +198,17 @@ export function Inventario() {
           {esAdmin && (
             <Button variant="outline" size="sm" onClick={() => setImportandoFotos(true)}>
               <Upload className="size-4" /> <span className="hidden sm:inline">Subir fotos</span>
+            </Button>
+          )}
+          {esAdmin && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={optimizarFotos}
+              loading={optimizandoFotos}
+              disabled={optimizandoFotos || productos.length === 0}
+            >
+              <Images className="size-4" /> <span className="hidden sm:inline">Optimizar fotos</span>
             </Button>
           )}
           {esAdmin && (

@@ -25,7 +25,7 @@ function esperar(ms: number): Promise<void> {
 /** Descarga una URL con reintentos y timeout: con 600+ fotos seguidas, el
  * CDN de Storage a veces corta o demora alguna de forma pasajera. Sin
  * reintento, esas se perdian como "fallidas" aunque la foto sí existe. */
-async function fetchConReintentos(url: string): Promise<Blob> {
+export async function fetchConReintentos(url: string): Promise<Blob> {
   let ultimoError: unknown
   for (let intento = 1; intento <= INTENTOS_MAX; intento++) {
     const control = new AbortController()

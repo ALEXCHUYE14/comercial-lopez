@@ -2,14 +2,17 @@ import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
 const BUCKET = 'product-images'
-const MAX_LADO_PX = 800   // lado máximo de la imagen final
-const CALIDAD_JPG = 0.82  // calidad JPEG (0-1), 0.82 = buena calidad, ~80KB por foto
+// Las fotos se muestran como miniaturas (~80 px en POS e Inventario); 400 px
+// se ve nítido incluso en pantallas de alta densidad y pesa ~4 veces menos que
+// 800 px, lo que baja directamente el Cached Egress de Storage.
+export const MAX_LADO_PX = 400
+export const CALIDAD_JPG = 0.75
 
 /**
  * Comprime una imagen usando Canvas API antes de subirla.
- * Reduce fotos de cámara de 5-15MB a ~80-150KB sin pérdida visual notable.
+ * Reduce fotos de cámara de 5-15MB a ~20-40KB sin pérdida visual notable.
  */
-function comprimirImagen(file: File): Promise<Blob> {
+export function comprimirImagen(file: Blob): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const url = URL.createObjectURL(file)
@@ -35,6 +38,10 @@ function comprimirImagen(file: File): Promise<Blob> {
       const ctx = canvas.getContext('2d')
       if (!ctx) { reject(new Error('Canvas no disponible')); return }
 
+      // JPEG no tiene transparencia: sin fondo blanco, un PNG con fondo
+      // transparente saldria con fondo negro.
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, width, height)
       ctx.drawImage(img, 0, 0, width, height)
       canvas.toBlob(
         (blob) => {
