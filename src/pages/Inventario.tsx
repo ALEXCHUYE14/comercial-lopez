@@ -74,8 +74,15 @@ export function Inventario() {
 
   async function exportarExcel() {
     try {
-      await exportarInventarioExcel(productos)
-      toast.exito('Inventario descargado en Excel')
+      // La lista de la pantalla solo trae productos activos; el respaldo debe
+      // incluir tambien los desactivados, si no un Excel "completo" los pierde.
+      const { data, error } = await supabase
+        .from('productos')
+        .select('*, categorias(*)')
+        .order('nombre')
+      if (error) throw new Error(error.message)
+      await exportarInventarioExcel((data ?? []) as Producto[])
+      toast.exito(`Inventario descargado en Excel (${data?.length ?? 0} productos)`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo generar el Excel')
     }
