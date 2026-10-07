@@ -150,43 +150,39 @@ export function Ventas() {
     )
   }, [ventas, q])
 
-  // ── Resumen con integración de caja activa ────────────────────────────────
-  // Cuando el filtro apunta a "hoy" y hay una caja abierta hoy, se usan los
-  // totales EN VIVO del contexto de caja. Esto garantiza que cualquier venta
-  // recién registrada en el POS aparezca aquí sin necesidad de recargar.
-  // Para cualquier otro rango de fechas, se usa la suma de la consulta a BD.
+  // Con el filtro en "hoy", recargar el historial cada vez que cambian los
+  // totales de la caja activa (= se registro/anulo/modifico una venta en el
+  // POS), para que el resumen se mantenga EN VIVO sin recargar la pagina.
+  const filtroEsHoy = desde === hoy && hasta === hoy
+  const firmaCaja = caja
+    ? `${caja.id}|${caja.total_efectivo}|${caja.total_yape}|${caja.total_fiado}`
+    : ''
+  useEffect(() => {
+    if (filtroEsHoy && firmaCaja) cargar()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firmaCaja])
+
+  // ── Resumen del periodo ───────────────────────────────────────────────────
+  // Siempre se calcula desde las ventas listadas. Antes, con filtro = hoy, se
+  // tomaban los totales de la caja abierta del usuario, que no coinciden con
+  // el historial si la caja se abrio despues de otras ventas del dia (otra
+  // caja ya cerrada) o si el admin ve ventas de otros cajeros: el resultado
+  // era "Recaudado S/ 0.00" con cientos de transacciones.
   const resumen = useMemo(() => {
     const validas = filtradas.filter((v: Venta) => !v.anulada)
-    const totalDB = validas.reduce((s: number, v: Venta) => s + Number(v.total), 0)
-
-    // La caja es "de hoy" si fue abierta en la fecha actual
-    const cajaEsDeHoy = caja !== null && caja.abierta_en.slice(0, 10) === hoy
-    // Solo sincronizamos con caja cuando el filtro está exactamente en hoy
-    const filtroEsHoy = desde === hoy && hasta === hoy
-    const anuladas    = filtradas.length - validas.length
-    // Si hay ventas anuladas los totales de caja no las reflejan — usar BD en ese caso
-    const canUseCaja  = cajaEsDeHoy && filtroEsHoy && anuladas === 0
-    const usandoCaja  = canUseCaja
-
-    // Conversión explícita a Number para evitar concatenación de texto o NaN
-    const efectivoCaja = canUseCaja && caja ? Number(caja.total_efectivo) : null
-    const yapeCaja     = canUseCaja && caja ? Number(caja.total_yape)     : null
-    const fiadoCaja    = canUseCaja && caja ? Number(caja.total_fiado)    : null
-
-    const total = canUseCaja && efectivoCaja !== null && yapeCaja !== null && fiadoCaja !== null
-      ? efectivoCaja + yapeCaja + fiadoCaja
-      : totalDB
+    const total = validas.reduce((s: number, v: Venta) => s + Number(v.total), 0)
+    const anuladas = filtradas.length - validas.length
 
     return {
       total,
       count: validas.length,
       anuladas,
-      usandoCaja,
-      efectivoCaja,
-      yapeCaja,
-      fiadoCaja,
+      usandoCaja: filtroEsHoy,
+      efectivoCaja: montoPorMetodo(validas, 'efectivo'),
+      yapeCaja: montoPorMetodo(validas, 'yape'),
+      fiadoCaja: montoPorMetodo(validas, 'fiado'),
     }
-  }, [filtradas, caja, hoy, desde, hasta])
+  }, [filtradas, filtroEsHoy])
 
   // ── Resumen agrupado por día (para ver ventas por dia/semana/quincena/mes:
   // el agrupamiento es siempre por dia; la vista de semana/quincena/mes surge
