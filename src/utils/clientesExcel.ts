@@ -15,6 +15,7 @@ const ENCABEZADOS = [
   'Telefono',
   'Direccion',
   'Limite de credito',
+  'Deuda inicial (solo clientes nuevos)',
   'Deuda actual (solo lectura)',
   'Activo (SI/NO)',
   'Fecha de registro (solo lectura)',
@@ -27,6 +28,14 @@ export type FilaCliente = {
   telefono: string | null
   direccion: string | null
   limite_credito: string | null
+  /** Solo se aplica al CREAR un cliente (fila sin ID): permite migrar el
+   * saldo que un cliente ya tenia (ej. traspaso de otro proyecto) sin
+   * simular una venta fiado, que descontaria stock del inventario. En una
+   * fila con ID (actualizacion) el servidor la ignora, igual que la columna
+   * "Deuda actual" — nunca pisa el saldo real de un cliente existente. Se
+   * exporta precargada con la deuda actual de cada cliente para que, si
+   * alguna vez se recrea (ID vacio), el saldo viaje solo. */
+  deuda_inicial: string | null
   activo: boolean | null
 }
 
@@ -54,6 +63,7 @@ export async function exportarClientesExcel(clientes: ClienteCredito[]): Promise
       textoSeguro(c.direccion ?? ''),
       numeroSeguro(c.limite_credito),
       numeroSeguro(c.deuda_actual),
+      numeroSeguro(c.deuda_actual),
       c.activo ? 'SI' : 'NO',
       ymd(new Date(c.creado_en)),
     ]),
@@ -72,6 +82,8 @@ const ALIAS: Record<string, keyof Omit<FilaCliente, 'fila'>> = {
   direccion: 'direccion',
   'limite de credito': 'limite_credito',
   'limite credito': 'limite_credito',
+  'deuda inicial (solo clientes nuevos)': 'deuda_inicial',
+  'deuda inicial': 'deuda_inicial',
   'activo (si/no)': 'activo',
   activo: 'activo',
 }
@@ -140,6 +152,7 @@ export async function leerClientesExcel(archivo: File): Promise<FilaCliente[]> {
       telefono: null,
       direccion: null,
       limite_credito: null,
+      deuda_inicial: null,
       activo: null,
     }
     for (const [encabezado, valor] of Object.entries(registro)) {
@@ -147,6 +160,7 @@ export async function leerClientesExcel(archivo: File): Promise<FilaCliente[]> {
       if (!campo) continue
       if (campo === 'activo') fila.activo = aBooleano(valor)
       else if (campo === 'limite_credito') fila.limite_credito = aNumeroTexto(valor)
+      else if (campo === 'deuda_inicial') fila.deuda_inicial = aNumeroTexto(valor)
       else if (campo === 'id') fila.id = aTexto(valor)
       else if (campo === 'nombre') fila.nombre = aTexto(valor)
       else if (campo === 'telefono') fila.telefono = aTexto(valor)

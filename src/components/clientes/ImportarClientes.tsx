@@ -63,6 +63,7 @@ export function ImportarClientes({
         telefono: f.telefono,
         direccion: f.direccion,
         limite_credito: f.limite_credito,
+        deuda_inicial: f.deuda_inicial,
         activo: f.activo,
       }))
       const { data, error } = await supabase.rpc('importar_clientes', { p_filas: payload })
@@ -124,7 +125,10 @@ export function ImportarClientes({
                 verás el detalle de cada una.
               </p>
               <p className="mt-1.5">
-                La <b>deuda actual</b> no se importa: se ignora a propósito para no alterar saldos.
+                Si el cliente <b>ya existe</b> (tiene ID), su deuda actual no se toca: se ignora a
+                propósito para no alterar saldos. Si es un cliente <b>nuevo</b> (sin ID), puedes usar la
+                columna <b>Deuda inicial</b> para traer el saldo que ya tenía (por ejemplo, al migrar
+                desde otro sistema) sin registrar ninguna venta ni descontar stock.
               </p>
             </div>
 

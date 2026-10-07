@@ -2443,8 +2443,15 @@ $$;
 --   - Con ID: actualiza ese cliente (el ID debe existir).
 --   - Sin ID: crea un cliente nuevo; no permite repetir nombre + telefono de
 --     un cliente activo ni de otra fila del mismo archivo.
---   - "deuda_actual" nunca se importa: el saldo solo lo cambian los cobros y
---     fiados, asi un Excel viejo no puede pisar la deuda real.
+--   - "deuda_actual" nunca se importa en una ACTUALIZACION: el saldo de un
+--     cliente que ya existe solo lo cambian los cobros y fiados, asi un Excel
+--     viejo no puede pisar la deuda real.
+--   - "Deuda inicial (solo clientes nuevos)" SI se usa, pero solo al CREAR un
+--     cliente (fila sin ID): permite migrar el saldo que un cliente ya tenia
+--     (ej. traspaso de otro sistema/proyecto) sin simular una venta fiado, que
+--     indebidamente descontaria stock del inventario. En una fila con ID
+--     (actualizacion) esta columna se ignora en silencio, igual que "Deuda
+--     actual" — nunca pisa el saldo de un cliente que ya existe.
 --   - Celda vacia en Telefono o Direccion = sin dato (null). En Limite o Activo
 --     vacia = conserva el valor actual si es actualizacion.
 create or replace function public.importar_clientes(p_filas jsonb)
@@ -2471,6 +2478,8 @@ declare
   v_limite        numeric(10,2);
   v_activo_txt    text;
   v_activo        boolean;
+  v_deuda_ini_txt text;
+  v_deuda_ini     numeric(10,2);
   v_clave         text;
   v_mensaje       text;
   v_creados       integer := 0;
@@ -2493,6 +2502,7 @@ begin
       v_dir        := nullif(btrim(coalesce(v_fila->>'direccion', '')), '');
       v_limite_txt := nullif(btrim(coalesce(v_fila->>'limite_credito', '')), '');
       v_activo_txt := nullif(btrim(coalesce(v_fila->>'activo', '')), '');
+      v_deuda_ini_txt := nullif(btrim(coalesce(v_fila->>'deuda_inicial', '')), '');
 
       v_id := null;
       v_existe := false;
@@ -2550,6 +2560,20 @@ begin
         raise exception 'El estado (Activo) debe ser SI o NO.';
       end if;
 
+      -- Solo se usa al CREAR (ver cabecera); en una fila con ID se ignora en
+      -- silencio para no pisar el saldo real de un cliente que ya existe.
+      if not v_existe and v_deuda_ini_txt is not null then
+        if v_deuda_ini_txt !~ '^[0-9]+([.][0-9]+)?$' then
+          raise exception 'La deuda inicial debe ser un numero.';
+        end if;
+        v_deuda_ini := round(v_deuda_ini_txt::numeric, 2);
+        if v_deuda_ini < 0 or v_deuda_ini > 100000 then
+          raise exception 'La deuda inicial debe estar entre 0 y 100000.';
+        end if;
+      else
+        v_deuda_ini := 0;
+      end if;
+
       if v_activo then
         v_clave := lower(v_nombre) || '|' || regexp_replace(coalesce(v_tel, ''), '\s', '', 'g');
         if v_clave = any(v_claves) then
@@ -2574,7 +2598,8 @@ begin
         'telefono', v_tel,
         'direccion', v_dir,
         'limite', v_limite,
-        'activo', v_activo
+        'activo', v_activo,
+        'deuda_inicial', v_deuda_ini
       );
       v_normalizadas := v_normalizadas || v_norm;
     exception when others then
@@ -2602,7 +2627,7 @@ begin
         v_norm->>'telefono',
         v_norm->>'direccion',
         (v_norm->>'limite')::numeric,
-        0,
+        coalesce((v_norm->>'deuda_inicial')::numeric, 0),
         (v_norm->>'activo')::boolean
       );
       v_creados := v_creados + 1;
