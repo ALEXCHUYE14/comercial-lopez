@@ -865,50 +865,70 @@ function TicketReprint({
         />
       )}
 
-      <div className="rounded-xl border border-dashed border-ink-200 p-4 font-sans text-sm">
+      {/* Vista previa con el mismo formato que el ticket impreso
+          (utils/ticket.ts): todo en negro y negrita, sin grises tenues ni
+          nombres recortados, para que se lea igual de claro. */}
+      <div className="rounded-xl border border-dashed border-ink-300 bg-white p-4 font-sans text-sm font-semibold text-black">
         <div className="mb-3 text-center">
-          <p className="font-display text-base font-bold">{negocio.nombre.toUpperCase()}</p>
-          {textoDocumento(negocio) && (
-            <p className="text-xs text-ink-400">{textoDocumento(negocio)}</p>
-          )}
-          {negocio.direccion && <p className="text-xs text-ink-400">{negocio.direccion}</p>}
-          <p className="text-xs text-ink-400">{fechaHora(venta.creado_en)}</p>
-          <p className="text-xs text-ink-400">Cajero: {venta.cajero_nombre ?? '-'}</p>
-          <p className="text-xs text-ink-400">Comprobante #{venta.numero}</p>
+          <p className="break-words font-display text-base font-black">{negocio.nombre.toUpperCase()}</p>
+          {textoDocumento(negocio) && <p className="text-[0.8rem]">{textoDocumento(negocio)}</p>}
+          {negocio.direccion && <p className="break-words text-[0.8rem]">{negocio.direccion}</p>}
+          <p className="mx-auto mt-1.5 inline-block border-2 border-black px-2.5 py-0.5 font-black">
+            {venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)'}
+          </p>
+          <p className="mt-1 text-[0.8rem]">{fechaHora(venta.creado_en)}</p>
+          <p className="break-words text-[0.8rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
         </div>
 
-        {cargando ? (
-          <div className="grid place-items-center py-6">
-            <Spinner className="size-5" />
+        <div className="border-t-2 border-black pt-2">
+          <div className="mb-1.5 flex justify-between text-[0.7rem] font-black tracking-wide">
+            <span>DESCRIPCIÓN</span>
+            <span>IMPORTE</span>
           </div>
-        ) : (
-          <div className="space-y-1 border-y border-ink-100 py-2.5">
-            {detalle.map((d) => (
-              <div key={d.id} className="flex justify-between gap-2">
-                <span className="min-w-0 truncate text-ink-700">
-                  {d.cantidad}x {d.producto_nombre}
-                  {/* Equivalente real descontado del stock (en unidad base) cuando la
-                      venta fue por caja, saco, arroba, docena, etc. */}
-                  {etiquetaDetalle(d) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad) && (
-                    <span className="ml-1 text-xs text-ink-400">
-                      · {etiquetaDetalle(d)} (descuenta {cantidad(Number(d.unidades))} del stock)
+          {cargando ? (
+            <div className="grid place-items-center py-6">
+              <Spinner className="size-5" />
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {detalle.map((d) => (
+                <div key={d.id}>
+                  <p className="break-words font-bold">
+                    {d.producto_nombre}
+                    {etiquetaDetalle(d) && (
+                      <span className="ml-1 text-[0.7rem] font-black uppercase">[{etiquetaDetalle(d)}]</span>
+                    )}
+                  </p>
+                  <div className="flex justify-between gap-2 pl-2">
+                    <span className="tabular min-w-0">
+                      {cantidad(Number(d.cantidad))} x {money(Number(d.precio_unitario))}
                     </span>
+                    <span className="tabular shrink-0 font-black">{money(Number(d.subtotal))}</span>
+                  </div>
+                  {/* Equivalente real descontado del stock (en unidad base) cuando
+                      la venta fue por caja, saco, arroba, docena, etc. Solo en
+                      pantalla, para el personal; no va en el ticket impreso. */}
+                  {etiquetaDetalle(d) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad) && (
+                    <p className="pl-2 text-xs font-medium text-ink-700">
+                      Descuenta {cantidad(Number(d.unidades))} del stock
+                    </p>
                   )}
-                </span>
-                <span className="tabular shrink-0 text-ink-900">{money(Number(d.subtotal))}</span>
-              </div>
-            ))}
-          </div>
-        )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
-        <div className="space-y-1 pt-2.5 text-ink-600">
+        <div className="mt-2.5 space-y-0.5 border-t border-dashed border-black pt-2.5">
           <Fila k="Subtotal" v={money(Number(venta.subtotal))} />
           {Number(venta.descuento) > 0 && <Fila k="Descuento" v={'- ' + money(Number(venta.descuento))} />}
           <Fila k="IGV (18%)" v={money(Number(venta.igv))} />
-          <div className="flex justify-between border-t border-ink-200 pt-1.5 font-display text-base font-bold text-ink-900">
-            <span>TOTAL</span>
-            <span className="tabular">{money(Number(venta.total))}</span>
-          </div>
+        </div>
+        <div className="my-2 flex justify-between border-y-2 border-black py-1.5 font-display text-lg font-black">
+          <span>TOTAL</span>
+          <span className="tabular">{money(Number(venta.total))}</span>
+        </div>
+        <div className="space-y-0.5 font-black">
           {lineasPago(
             {
               metodo: venta.metodo,
@@ -923,8 +943,12 @@ function TicketReprint({
           {admiteVuelto(venta.metodo) && Number(venta.vuelto) > 0 && (
             <Fila k="Vuelto" v={money(Number(venta.vuelto))} />
           )}
+          {venta.cliente_nombre && <Fila k="Fiado a" v={venta.cliente_nombre} />}
         </div>
-        <p className="mt-3 text-center text-xs text-ink-400">¡Gracias por su compra!</p>
+        <div className="mt-2.5 border-t border-dashed border-black pt-2 text-center text-[0.8rem]">
+          <p>¡Gracias por su compra!</p>
+          <p>Vuelva pronto</p>
+        </div>
       </div>
     </Sheet>
   )
@@ -932,9 +956,9 @@ function TicketReprint({
 
 function Fila({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex justify-between">
-      <span>{k}</span>
-      <span className="tabular">{v}</span>
+    <div className="flex justify-between gap-3">
+      <span className="min-w-0 break-words">{k}</span>
+      <span className="tabular max-w-[65%] shrink-0 break-words text-right">{v}</span>
     </div>
   )
 }

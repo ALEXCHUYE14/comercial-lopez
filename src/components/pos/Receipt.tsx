@@ -154,40 +154,44 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       </div>
 
       {/* Vista previa */}
-      <div className="rounded-xl border border-dashed border-ink-200 bg-white p-4 font-mono text-[0.75rem] leading-relaxed">
+      {/* Mismo formato que el ticket impreso (utils/ticket.ts): todo en negro
+          y negrita, sin grises tenues. */}
+      <div className="rounded-xl border border-dashed border-ink-300 bg-white p-4 font-sans text-sm font-semibold leading-snug text-black">
         {/* Cabecera */}
         <div className="mb-2 text-center">
-          <p className="text-sm font-black tracking-wide">{negocio.nombre.toUpperCase()}</p>
-          {textoDocumento(negocio) && (
-            <p className="text-ink-400 text-[0.7rem]">{textoDocumento(negocio)}</p>
-          )}
-          {negocio.direccion && <p className="text-ink-400 text-[0.7rem]">{negocio.direccion}</p>}
-          <p className="text-ink-400 text-[0.7rem]">{fechaHora(venta.creado_en)}</p>
-          <p className="text-ink-400 text-[0.7rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
-          <p className="font-bold text-[0.75rem]">
-            {venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket (pendiente de sincronizar)'}
+          <p className="break-words text-base font-black">{negocio.nombre.toUpperCase()}</p>
+          {textoDocumento(negocio) && <p className="text-[0.8rem]">{textoDocumento(negocio)}</p>}
+          {negocio.direccion && <p className="break-words text-[0.8rem]">{negocio.direccion}</p>}
+          <p className="mx-auto mt-1.5 inline-block border-2 border-black px-2.5 py-0.5 font-black">
+            {venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)'}
           </p>
+          <p className="mt-1 text-[0.8rem]">{fechaHora(venta.creado_en)}</p>
+          <p className="break-words text-[0.8rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
         </div>
 
-        <hr className="my-2 border-ink-400" />
+        <hr className="my-2 border-t-2 border-black" />
+        <div className="mb-1.5 flex justify-between text-[0.7rem] font-black tracking-wide">
+          <span>DESCRIPCIÓN</span>
+          <span>IMPORTE</span>
+        </div>
 
         {/* Items */}
-        <div className="space-y-1">
+        <div className="space-y-2">
           {items.map((i) => (
             <div key={`${i.producto.id}::${i.modalidad}`}>
-              <p className="break-words font-bold text-ink-900">
+              <p className="break-words font-bold">
                 {i.producto.nombre}
                 {etiquetaModalidadDe(i.producto, i.modalidad) && (
-                  <span className="ml-1 rounded bg-accent-100 px-1 py-0.5 text-[0.55rem] font-bold uppercase text-accent-700">
-                    {etiquetaModalidadDe(i.producto, i.modalidad)}
+                  <span className="ml-1 text-[0.7rem] font-black uppercase">
+                    [{etiquetaModalidadDe(i.producto, i.modalidad)}]
                   </span>
                 )}
               </p>
               <div className="flex justify-between gap-2 pl-2">
-                <span className="tabular min-w-0 text-ink-600">
+                <span className="tabular min-w-0">
                   {cantidadTicket(i)} x {money(precioItem(i))}
                 </span>
-                <span className="tabular shrink-0 font-bold">
+                <span className="tabular shrink-0 font-black">
                   {money(precioItem(i) * i.cantidad)}
                 </span>
               </div>
@@ -195,10 +199,10 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           ))}
         </div>
 
-        <hr className="my-2 border-dashed border-ink-300" />
+        <hr className="my-2 border-dashed border-black" />
 
         {/* Subtotales */}
-        <div className="space-y-0.5 text-ink-600">
+        <div className="space-y-0.5">
           <PreviewRow k="Subtotal" v={money(venta.subtotal)} />
           {venta.descuento > 0 && (
             <PreviewRow k="Descuento" v={'- ' + money(venta.descuento)} />
@@ -206,26 +210,19 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           <PreviewRow k="IGV (18%)" v={money(venta.igv)} />
         </div>
 
-        <hr className="my-2 border-ink-400" />
-
         {/* Total */}
-        <div className="flex justify-between font-black text-sm text-ink-900">
+        <div className="my-2 flex justify-between border-y-2 border-black py-1.5 text-lg font-black">
           <span>TOTAL</span>
           <span className="tabular">{money(venta.total)}</span>
         </div>
 
-        <hr className="my-2 border-dashed border-ink-300" />
-
         {/* Pago */}
-        <div className="space-y-0.5">
+        <div className="space-y-0.5 font-black">
           {lineasPago(
             { metodo: venta.metodo, pagoRecibido: venta.pago_recibido, vuelto: venta.vuelto, pagos: venta.pagos },
             (m) => ETIQUETA[m] ?? m,
           ).map((l) => (
-            <div key={l.etiqueta} className="flex justify-between font-bold text-ink-800">
-              <span>{l.etiqueta}</span>
-              <span className="tabular">{money(l.monto)}</span>
-            </div>
+            <PreviewRow key={l.etiqueta} k={l.etiqueta} v={money(l.monto)} />
           ))}
           {admiteVuelto(venta.metodo) && venta.vuelto > 0 && (
             <PreviewRow k="Vuelto" v={money(venta.vuelto)} />
@@ -235,8 +232,10 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           )}
         </div>
 
-        <hr className="my-2 border-dashed border-ink-300" />
-        <p className="text-center text-ink-400">¡Gracias por su compra!</p>
+        <div className="mt-2.5 border-t border-dashed border-black pt-2 text-center text-[0.8rem]">
+          <p>¡Gracias por su compra!</p>
+          <p>Vuelva pronto</p>
+        </div>
       </div>
     </Sheet>
   )
@@ -244,9 +243,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
 function PreviewRow({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex justify-between">
-      <span>{k}</span>
-      <span className="tabular font-semibold">{v}</span>
+    <div className="flex justify-between gap-3">
+      <span className="min-w-0 break-words">{k}</span>
+      <span className="tabular max-w-[65%] shrink-0 break-words text-right">{v}</span>
     </div>
   )
 }
