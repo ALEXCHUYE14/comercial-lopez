@@ -26,13 +26,14 @@ function precioItem(item: ItemCarrito): number {
   return precioPresentacion(item.producto, item.modalidad)
 }
 
-function etiquetaCantidad(item: ItemCarrito): string {
-  // El formato "N kg" solo aplica cuando se vendio a granel suelto
-  // (modalidad 'unidad'); por caja o por saco es una cantidad entera.
+// Cantidad para el ticket, que la muestra como "2 x S/ 3.50". El formato
+// "N kg" solo aplica cuando se vendio a granel suelto (modalidad 'unidad');
+// por caja o por saco es una cantidad entera.
+function cantidadTicket(item: ItemCarrito): string {
   if (item.producto.tipo_venta === 'granel' && item.modalidad === 'unidad') {
     return `${cantidad(item.cantidad)} ${item.producto.unidad}`
   }
-  return `${item.cantidad}x`
+  return cantidad(item.cantidad)
 }
 
 interface Props {
@@ -50,9 +51,10 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
   function datosTicket(): { datos: TicketDatos; lineas: TicketLinea[] } {
     const lineas: TicketLinea[] = items.map((i) => ({
-      cantidadTexto: etiquetaCantidad(i),
+      cantidadTexto: cantidadTicket(i),
       nombre: i.producto.nombre,
       tag: etiquetaModalidadDe(i.producto, i.modalidad),
+      precioUnitarioTexto: money(precioItem(i)),
       montoTexto: money(precioItem(i) * i.cantidad),
     }))
     const datos: TicketDatos = {
@@ -172,18 +174,23 @@ export function Receipt({ open, onClose, venta, items }: Props) {
         {/* Items */}
         <div className="space-y-1">
           {items.map((i) => (
-            <div key={`${i.producto.id}::${i.modalidad}`} className="flex justify-between gap-2">
-              <span className="min-w-0 break-words font-semibold text-ink-800">
-                {etiquetaCantidad(i)} {i.producto.nombre}
+            <div key={`${i.producto.id}::${i.modalidad}`}>
+              <p className="break-words font-bold text-ink-900">
+                {i.producto.nombre}
                 {etiquetaModalidadDe(i.producto, i.modalidad) && (
                   <span className="ml-1 rounded bg-accent-100 px-1 py-0.5 text-[0.55rem] font-bold uppercase text-accent-700">
                     {etiquetaModalidadDe(i.producto, i.modalidad)}
                   </span>
                 )}
-              </span>
-              <span className="tabular shrink-0 font-bold">
-                {money(precioItem(i) * i.cantidad)}
-              </span>
+              </p>
+              <div className="flex justify-between gap-2 pl-2">
+                <span className="tabular min-w-0 text-ink-600">
+                  {cantidadTicket(i)} x {money(precioItem(i))}
+                </span>
+                <span className="tabular shrink-0 font-bold">
+                  {money(precioItem(i) * i.cantidad)}
+                </span>
+              </div>
             </div>
           ))}
         </div>

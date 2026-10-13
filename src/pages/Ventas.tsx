@@ -730,10 +730,14 @@ function TicketReprint({
   // ticket" via CSS.
   function datosTicket(): { datos: TicketDatos; lineas: TicketLinea[] } | null {
     if (!venta) return null
+    // Supabase devuelve las columnas NUMERIC como string: se convierten antes
+    // de formatear (antes Number.isInteger("2") daba false y el ticket
+    // mostraba la cantidad con otro formato que al imprimir la venta nueva).
     const lineas: TicketLinea[] = detalle.map((d) => ({
-      cantidadTexto: Number.isInteger(d.cantidad) ? `${d.cantidad}x` : cantidad(d.cantidad),
+      cantidadTexto: cantidad(Number(d.cantidad)),
       nombre: d.producto_nombre,
       tag: etiquetaDetalle(d),
+      precioUnitarioTexto: money(Number(d.precio_unitario)),
       montoTexto: money(Number(d.subtotal)),
     }))
     const datos: TicketDatos = {

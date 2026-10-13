@@ -1,5 +1,5 @@
-// Generador de tickets termicos (80mm) — usado tanto al confirmar una venta
-// nueva (Receipt) como al reimprimir un comprobante desde el historial
+// Generador de tickets termicos (80mm / 58mm) — usado tanto al confirmar una
+// venta nueva (Receipt) como al reimprimir un comprobante desde el historial
 // (Ventas). Comparten esta misma plantilla para que ambos casos impriman
 // siempre igual de nitidos.
 //
@@ -26,11 +26,20 @@ const ETIQUETA_METODO: Record<string, string> = {
 }
 
 export interface TicketLinea {
-  /** "2x" o "1.5 kg" */
+  /** Cantidad sin sufijo: "2" o "1.5 kg". */
   cantidadTexto: string
   nombre: string
   tag?: string
+  /** Precio unitario ya formateado ("S/ 3.50"); se imprime "2 x S/ 3.50". */
+  precioUnitarioTexto?: string
   montoTexto: string
+}
+
+/** Detalle que va debajo del nombre: "2 x S/ 3.50" (o "Cant.: 2" sin precio). */
+export function detalleLinea(l: TicketLinea): string {
+  return l.precioUnitarioTexto
+    ? `${l.cantidadTexto} x ${l.precioUnitarioTexto}`
+    : `Cant.: ${l.cantidadTexto}`
 }
 
 export interface TicketDatos {
@@ -51,6 +60,46 @@ export interface TicketDatos {
 }
 
 /**
+ * Estilos base compartidos por los tickets termicos HTML (venta y cierre de
+ * turno), pensados para que la impresora termica los reproduzca nitidos:
+ *  - Sans-serif en negrita (Arial): Courier New es de trazo muy fino y en
+ *    papel termico sale tenue y "comido"; un trazo grueso se lee sin esfuerzo.
+ *  - Solo negro puro: los grises/colores el driver los convierte en un tramado
+ *    de puntos (dithering) que se ve borroso.
+ *  - Sin `size` en @page (el anterior "80mm auto" era invalido y el navegador
+ *    lo ignoraba): el ancho lo pone el papel del driver (80 o 58 mm) y el
+ *    contenido ocupa el 100% con 5 mm de margen seguro a cada lado, en vez de
+ *    un ancho fijo de 80 mm que en papel de 58 mm se encoge (letra diminuta)
+ *    o queda cortado en los bordes.
+ */
+export const ESTILOS_BASE_TICKET = `
+    @page { margin: 0; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: #fff; color: #000; }
+    html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body {
+      font-family: Arial, 'Helvetica Neue', Helvetica, 'Liberation Sans', sans-serif;
+      font-size: 11pt;
+      font-weight: 700;
+      line-height: 1.35;
+      font-variant-numeric: tabular-nums;
+      text-rendering: geometricPrecision;
+    }
+    .ticket { width: 100%; max-width: 80mm; padding: 3mm 5mm 8mm; }
+    .header { text-align: center; margin-bottom: 2mm; }
+    .nombre-negocio { font-size: 16pt; font-weight: 900; line-height: 1.2; word-break: break-word; }
+    .sub-header { font-size: 10pt; margin-top: 0.8mm; word-break: break-word; }
+    .sep-dash { border: none; border-top: 1.5px dashed #000; margin: 2.5mm 0; }
+    .sep-solid { border: none; border-top: 2.5px solid #000; margin: 2.5mm 0; }
+    .row { display: flex; justify-content: space-between; align-items: baseline; gap: 3mm; font-size: 11pt; line-height: 1.55; }
+    .row > span:first-child { flex: 1; min-width: 0; word-break: break-word; }
+    .row > span:last-child { flex-shrink: 0; max-width: 65%; text-align: right; word-break: break-word; }
+    .row-total { display: flex; justify-content: space-between; align-items: baseline; gap: 3mm; font-size: 17pt; font-weight: 900; line-height: 1.3; margin: 1mm 0; }
+    .row-total > span:last-child { flex-shrink: 0; text-align: right; }
+    .footer { text-align: center; margin-top: 3mm; font-size: 10.5pt; line-height: 1.5; }
+`
+
+/**
  * `qr` es el QR de Yape ya convertido a blanco y negro (ver qrParaTicket en
  * utils/qrTermico.ts), o null/undefined si el ticket no lleva QR.
  */
@@ -65,13 +114,16 @@ export function construirTicketHtml(
     .map((l) => `<div class="sub-header">${escaparHtml(l)}</div>`)
     .join('')
 
+  // Cada item: nombre en su propia linea (nunca se corta por falta de
+  // espacio) y debajo "cantidad x precio unitario" con el importe a la
+  // derecha — asi el cliente puede verificar cada cobro de un vistazo.
   const filas = lineas
     .map(
       (l) => `
-        <div class="item">
-          <div class="item-nombre">${escaparHtml(l.cantidadTexto)} ${escaparHtml(l.nombre)}${l.tag ? ` <span class="tag">[${escaparHtml(l.tag)}]</span>` : ''}</div>
-          <div class="item-precio">${escaparHtml(l.montoTexto)}</div>
-        </div>`,
+      <div class="item">
+        <div class="item-nombre">${escaparHtml(l.nombre)}${l.tag ? ` <span class="tag">[${escaparHtml(l.tag)}]</span>` : ''}</div>
+        <div class="item-detalle"><span>${escaparHtml(detalleLinea(l))}</span><span class="item-monto">${escaparHtml(l.montoTexto)}</span></div>
+      </div>`,
     )
     .join('')
 
@@ -92,13 +144,13 @@ export function construirTicketHtml(
   const pagoLineas = lineasPago(venta, (m) => ETIQUETA_METODO[m] ?? m)
     .map(
       (l) =>
-        `<div class="row-pago"><span>${escaparHtml(l.etiqueta)}</span><span>${money(l.monto)}</span></div>`,
+        `<div class="row row-pago"><span>${escaparHtml(l.etiqueta)}</span><span>${money(l.monto)}</span></div>`,
     )
     .join('\n  ')
 
   const vueltoLine =
     admiteVuelto(venta.metodo) && venta.vuelto > 0
-      ? `<div class="row"><span>Vuelto</span><span>${money(venta.vuelto)}</span></div>`
+      ? `<div class="row row-pago"><span>Vuelto</span><span>${money(venta.vuelto)}</span></div>`
       : ''
 
   const clienteLine = venta.clienteNombre
@@ -113,203 +165,91 @@ export function construirTicketHtml(
   // hooks/useVentasOffline.ts) que aun no tiene el numero correlativo real
   // que le asigna el servidor al sincronizar.
   const numeroTicket =
-    venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket (pendiente de sincronizar)'
+    venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)'
 
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Ticket #${venta.numero}</title>
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
-    html {
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-
-    body {
-      font-family: 'Courier New', Courier, monospace;
-      font-size: 11pt;
-      line-height: 1.6;
-      width: 80mm;
-      padding: 5mm 4mm 8mm 4mm;
-      color: #000000;
-      background: #ffffff;
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-      text-rendering: optimizeLegibility;
-      -webkit-font-smoothing: antialiased;
-    }
-
-    /* Encabezado */
-    .header {
-      text-align: center;
-      margin-bottom: 3mm;
-    }
-    .nombre-negocio {
-      font-size: 15pt;
-      font-weight: 900;
-      letter-spacing: 0.5px;
-      line-height: 1.3;
-    }
-    .sub-header {
-      font-size: 10pt;
-      margin-top: 1mm;
-      line-height: 1.5;
-    }
+  <title>${venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket'}</title>
+  <style>${ESTILOS_BASE_TICKET}
     .ticket-num {
-      font-size: 11pt;
-      font-weight: bold;
-      margin-top: 1mm;
+      display: inline-block;
+      margin: 1.5mm 0 0.5mm;
+      padding: 0.5mm 2.5mm;
+      border: 2px solid #000;
+      font-size: 12.5pt;
+      font-weight: 900;
     }
 
     /* Aviso de comprobante anulado */
     .anulada {
       margin: 2mm 0;
       text-align: center;
-      font-size: 11pt;
+      font-size: 12pt;
       font-weight: 900;
-      letter-spacing: 0.5px;
-      border: 1.5px solid #000;
+      border: 2.5px solid #000;
       padding: 1.5mm;
     }
 
-    /* Separadores */
-    .sep-dash {
-      border: none;
-      border-top: 1px dashed #000;
-      margin: 3mm 0;
-    }
-    .sep-solid {
-      border: none;
-      border-top: 2px solid #000;
-      margin: 3mm 0;
+    /* Cabecera de columnas */
+    .cols {
+      display: flex;
+      justify-content: space-between;
+      font-size: 9.5pt;
+      font-weight: 900;
+      margin-bottom: 1.5mm;
     }
 
     /* Items del carrito */
-    .item {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 4px;
-      margin-bottom: 2mm;
-    }
-    .item-nombre {
-      flex: 1;
-      font-size: 10.5pt;
-      font-weight: 600;
-      word-break: break-word;
-      line-height: 1.4;
-    }
-    .tag {
-      font-size: 9pt;
-      font-weight: 700;
-    }
-    .item-precio {
-      flex-shrink: 0;
-      font-size: 10.5pt;
-      font-weight: 700;
-      text-align: right;
-    }
-
-    /* Filas de resumen */
-    .row {
+    .item { margin-bottom: 2mm; break-inside: avoid; }
+    .item-nombre { font-size: 11.5pt; font-weight: 900; line-height: 1.3; word-break: break-word; }
+    .tag { font-size: 9.5pt; font-weight: 900; }
+    .item-detalle {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      gap: 4px;
-      font-size: 10pt;
-      line-height: 1.7;
+      gap: 3mm;
+      padding-left: 3mm;
+      font-size: 10.5pt;
     }
-    .row span:first-child {
-      flex: 1;
-    }
-    .row span:last-child {
-      flex-shrink: 0;
-      text-align: right;
-      font-weight: 600;
-    }
+    .item-monto { flex-shrink: 0; font-size: 11.5pt; font-weight: 900; text-align: right; }
 
-    /* Fila TOTAL destacada */
-    .row-total {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 4px;
-      font-size: 15pt;
-      font-weight: 900;
-      letter-spacing: 0.5px;
-      line-height: 1.5;
-      margin: 1mm 0;
-    }
+    /* Metodo de pago y vuelto */
+    .row-pago { font-size: 12pt; font-weight: 900; }
 
-    /* Metodo de pago */
-    .row-pago {
-      display: flex;
-      justify-content: space-between;
-      font-size: 11pt;
-      font-weight: 700;
-      line-height: 1.7;
-    }
-
-    /* QR de Yape */
-    .qr {
-      text-align: center;
-      margin-top: 4mm;
-      font-size: 10pt;
-      font-weight: 700;
-    }
+    /* QR de Yape: bitmap 1-bit sin suavizado, para que los modulos salgan
+       con bordes duros y el celular lo lea a la primera. */
+    .qr { text-align: center; margin-top: 3mm; font-size: 11pt; font-weight: 900; break-inside: avoid; }
     .qr img {
       display: block;
       width: 40mm;
-      height: 40mm;
+      max-width: 100%;
+      height: auto;
       margin: 1.5mm auto 0;
+      image-rendering: crisp-edges;
       image-rendering: pixelated;
-    }
-
-    /* Pie */
-    .footer {
-      text-align: center;
-      margin-top: 4mm;
-      font-size: 10pt;
-      line-height: 1.6;
-    }
-
-    @page {
-      size: 80mm auto;
-      margin: 0;
-    }
-
-    @media print {
-      body {
-        width: 80mm;
-      }
     }
   </style>
 </head>
 <body>
+<div class="ticket">
 
   <div class="header">
     <div class="nombre-negocio">${escaparHtml(negocio.nombre.toUpperCase())}</div>
     ${encabezadoNegocio}
-    <div class="sub-header">${fechaHora(venta.creadoEn)}</div>
-    <div class="sub-header">Cajero: ${escaparHtml(venta.cajeroNombre ?? '-')}</div>
     <div class="ticket-num">${numeroTicket}</div>
+    <div class="sub-header">${escaparHtml(fechaHora(venta.creadoEn))}</div>
+    <div class="sub-header">Cajero: ${escaparHtml(venta.cajeroNombre ?? '-')}</div>
   </div>
 
   ${anuladaBanner}
 
   <hr class="sep-solid"/>
 
-  <div class="items">
-    ${filas}
-  </div>
+  <div class="cols"><span>DESCRIPCIÓN</span><span>IMPORTE</span></div>
+  ${filas}
 
   <hr class="sep-dash"/>
 
@@ -324,7 +264,7 @@ export function construirTicketHtml(
     <span>${money(venta.total)}</span>
   </div>
 
-  <hr class="sep-dash"/>
+  <hr class="sep-solid"/>
 
   ${pagoLineas}
   ${vueltoLine}
@@ -339,6 +279,7 @@ export function construirTicketHtml(
 
   ${qrBloque}
 
+</div>
 </body>
 </html>`
 }
@@ -346,10 +287,11 @@ export function construirTicketHtml(
 /**
  * Abre una ventana dedicada solo al ticket, la puebla y dispara la
  * impresion. Lanza un Error (con mensaje para mostrar en un toast) si el
- * navegador bloquea el popup.
+ * navegador bloquea el popup. La usan todos los tickets HTML (venta y
+ * cierre de turno).
  */
 export function imprimirTicketHtml(html: string): void {
-  const w = window.open('', '_blank', 'width=400,height=700,menubar=no,toolbar=no,scrollbars=no')
+  const w = window.open('', '_blank', 'width=400,height=700,menubar=no,toolbar=no,scrollbars=yes')
   if (!w) {
     throw new Error(
       'El navegador bloqueó la ventana de impresión. Habilita los popups para este sitio e intenta nuevamente.',
@@ -362,41 +304,49 @@ export function imprimirTicketHtml(html: string): void {
 
   // Cierra la ventana solo cuando el navegador termina con el dialogo de
   // impresion (evento "afterprint"), no antes. Cerrarla justo despues de
-  // llamar a print() -como se hacia antes- deja la vista previa en blanco:
-  // en navegadores modernos print() no bloquea la ejecucion, asi que el
-  // cierre ocurria mientras el navegador todavia estaba renderizando el
-  // contenido para imprimir.
+  // llamar a print() deja la vista previa en blanco: en navegadores modernos
+  // print() no bloquea la ejecucion, asi que el cierre ocurria mientras el
+  // navegador todavia estaba renderizando el contenido para imprimir.
   let cerrada = false
   const cerrar = () => {
     if (cerrada) return
     cerrada = true
-    w.close()
+    try {
+      if (!w.closed) w.close()
+    } catch {
+      // ventana ya cerrada por el usuario
+    }
   }
   w.addEventListener('afterprint', cerrar)
   // Respaldo por si el navegador no dispara "afterprint" (pasa en algunos
   // flujos de impresion a impresoras termicas/Bluetooth).
   setTimeout(cerrar, 60000)
 
-  // Imprime cuando terminaron de cargar las imagenes del ticket (el QR de
-  // Yape): llamar a print() antes las dejaria en blanco. Tope de 3 s para que
-  // una imagen que nunca carga no deje el ticket sin imprimir.
+  // Imprime cuando terminaron de cargar las imagenes (el QR de Yape) y las
+  // fuentes: llamar a print() antes las dejaria en blanco o con la letra de
+  // respaldo. Tope de 3 s para que algo que nunca carga no deje el ticket sin
+  // imprimir.
   const imagenes = Array.from(w.document.images).filter((img) => !img.complete)
-  const esperaImagenes = Promise.race([
-    Promise.all(
-      imagenes.map(
+  const fuentes = w.document.fonts?.ready.then(() => undefined) ?? Promise.resolve()
+  const listo = Promise.race([
+    Promise.all([
+      fuentes,
+      ...imagenes.map(
         (img) =>
           new Promise<void>((resolve) => {
             img.addEventListener('load', () => resolve())
             img.addEventListener('error', () => resolve())
           }),
       ),
-    ),
+    ]),
     new Promise<void>((resolve) => setTimeout(resolve, 3000)),
   ])
-  esperaImagenes.then(() => {
-    setTimeout(() => {
-      // La ventana pudo cerrarse mientras tanto (el cajero la cerro a mano).
-      if (!w.closed) w.print()
-    }, 350)
-  })
+  listo
+    .catch(() => undefined)
+    .then(() => {
+      setTimeout(() => {
+        // La ventana pudo cerrarse mientras tanto (el cajero la cerro a mano).
+        if (!cerrada && !w.closed) w.print()
+      }, 300)
+    })
 }

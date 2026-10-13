@@ -7,7 +7,7 @@
 import { money, fechaHora } from '@/utils/format'
 import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { QrTermico } from '@/utils/qrTermico'
-import type { TicketDatos, TicketLinea } from '@/utils/ticket'
+import { detalleLinea, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { admiteVuelto, lineasPago } from '@/utils/pagos'
 
 const ETIQUETA_METODO: Record<string, string> = {
@@ -42,6 +42,9 @@ const CMD = {
   // a la mitad de una palabra en impresoras que no auto-envuelven bien.
   altoDobleOn: [GS, 0x21, 0x01],
   altoDobleOff: [GS, 0x21, 0x00],
+  // Alto + ancho dobles: SOLO para una linea corta centrada (el monto del
+  // TOTAL), nunca dentro de fila(), por lo explicado arriba.
+  dobleOn: [GS, 0x21, 0x11],
   feed: (n: number) => [ESC, 0x64, n],
   cortarParcial: [GS, 0x56, 0x01],
   // Selecciona tabla de caracteres CP850 (Multilingual Latin-1), la que mejor
@@ -67,6 +70,10 @@ function textoABytes(texto: string): number[] {
     const mapeado = MAPA_CP850[ch]
     if (mapeado !== undefined) {
       bytes.push(mapeado)
+    } else if (/\s/.test(ch)) {
+      // Espacios Unicode (NBSP, espacio fino de "a. m." en fechas, etc.) ->
+      // espacio comun; si no, la impresora los mostraria como "?".
+      bytes.push(0x20)
     } else {
       const code = ch.codePointAt(0) ?? 0x3f
       // Fuera de ASCII imprimible y sin mapeo conocido -> "?" en vez de
@@ -105,6 +112,11 @@ function envolver(texto: string, ancho = COLUMNAS): string[] {
   return lineas.length ? lineas : ['']
 }
 
+/** "IZQ      DER" ocupando exactamente el ancho del papel. */
+function alinearColumnas(izq: string, der: string): string {
+  return izq + ' '.repeat(Math.max(1, COLUMNAS - izq.length - der.length)) + der
+}
+
 // Exportada (ademas de usarse internamente en este archivo) para que otros
 // tickets termicos del sistema — ej. el cierre de turno en ticketCierre.ts —
 // puedan reutilizar exactamente los mismos comandos ESC/POS y helpers de
@@ -130,7 +142,17 @@ export class ConstructorTicket {
   }
 
   negrita(texto: string) {
-    return this.raw([...CMD.negritaOn]).linea(texto).raw([...CMD.negritaOff])
+    // Si cabe en una linea se envia tal cual (conserva espacios de alineacion,
+    // ej. la cabecera de columnas); si no, se envuelve por palabras.
+    this.raw([...CMD.negritaOn])
+    if (texto.length <= COLUMNAS) this.linea(texto)
+    else this.parrafo(texto)
+    return this.raw([...CMD.negritaOff])
+  }
+
+  /** Centrado y en negrita (ej. aviso de comprobante anulado). */
+  centroNegrita(texto: string) {
+    return this.raw([...CMD.negritaOn]).centro(texto).raw([...CMD.negritaOff])
   }
 
   tituloGrande(texto: string) {
@@ -158,16 +180,34 @@ export class ConstructorTicket {
     return this.linea(texto)
   }
 
+  /** Texto alineado a la izquierda, envuelto por palabras (sin que la
+   * impresora lo corte a mitad de palabra). */
+  parrafo(texto: string) {
+    for (const l of envolver(texto)) this.linea(l)
+    return this
+  }
+
   /** Dos columnas: izquierda pegada al borde, derecha alineada a la derecha. */
   fila(izq: string, der: string) {
     const espacio = COLUMNAS - izq.length - der.length
     if (espacio >= 1) {
       return this.linea(izq + ' '.repeat(espacio) + der)
     }
-    // La izquierda no cabe junto con la derecha en una sola linea: se corta
-    // en su propia linea y la derecha va alineada a la derecha debajo,
-    // evitando que la impresora la envuelva a mitad de palabra.
-    return this.linea(izq).linea(' '.repeat(Math.max(0, COLUMNAS - der.length)) + der)
+    // No caben juntas en una sola linea: la izquierda va envuelta en sus
+    // propias lineas y la derecha alineada a la derecha debajo (tambien
+    // envuelta si por si sola excede el ancho, ej. un nombre de cliente largo).
+    if (izq) this.parrafo(izq)
+    for (const l of envolver(der)) this.linea(' '.repeat(Math.max(0, COLUMNAS - l.length)) + l)
+    return this
+  }
+
+  /** Linea corta centrada a doble alto y doble ancho (ej. monto del TOTAL).
+   * Si no cabe a doble ancho (COLUMNAS/2), cae a doble alto solamente. */
+  centroGrande(texto: string) {
+    const cabeDoble = texto.length <= Math.floor(COLUMNAS / 2)
+    this.raw([...CMD.alinearCentro, ...CMD.negritaOn, ...(cabeDoble ? CMD.dobleOn : CMD.altoDobleOn)])
+    this.linea(texto)
+    return this.raw([...CMD.altoDobleOff, ...CMD.negritaOff, ...CMD.alinearIzq])
   }
 
   /** Como fila(), pero en negrita y a doble alto — para la linea de TOTAL. */
@@ -226,27 +266,25 @@ export function construirTicketEscPos(
   const documento = textoDocumento(negocio)
   if (documento) t.centro(documento)
   if (negocio.direccion) t.centro(negocio.direccion)
-  t.centro(fechaHora(venta.creadoEn))
-  t.centro(`Cajero: ${venta.cajeroNombre ?? '-'}`)
   // numero=0 = venta registrada offline, aun sin numero correlativo real
   // (ver hooks/useVentasOffline.ts).
-  t.centro(venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket (pendiente de sincronizar)')
+  t.centroNegrita(venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)')
+  t.centro(fechaHora(venta.creadoEn))
+  t.centro(`Cajero: ${venta.cajeroNombre ?? '-'}`)
 
   if (venta.anulada) {
-    t.saltar(1).negrita('*** COMPROBANTE ANULADO ***')
+    t.saltar(1).centroNegrita('*** COMPROBANTE ANULADO ***')
   }
 
-  t.saltar(1).separador('=')
+  t.separador('=')
+  t.negrita(alinearColumnas('DESCRIPCION', 'IMPORTE'))
+  t.separador('-')
 
+  // Mismo formato que el ticket HTML: nombre (en negrita, envuelto por
+  // palabras) y debajo "cantidad x precio" con el importe a la derecha.
   for (const l of lineas) {
-    const nombre = `${l.cantidadTexto} ${l.nombre}${l.tag ? ` [${l.tag}]` : ''}`
-    if (nombre.length + l.montoTexto.length + 1 <= COLUMNAS) {
-      t.fila(nombre, l.montoTexto)
-    } else {
-      // Nombre largo: va en su propia linea y el monto alineado a la
-      // derecha debajo, igual que el ticket HTML lo envuelve con flexbox.
-      t.texto(nombre).fila('', l.montoTexto)
-    }
+    t.negrita(`${l.nombre}${l.tag ? ` [${l.tag}]` : ''}`)
+    t.filaNegrita(`  ${detalleLinea(l)}`, l.montoTexto)
   }
 
   t.separador('-')
@@ -255,8 +293,9 @@ export function construirTicketEscPos(
   t.fila('IGV (18%)', money(venta.igv))
 
   t.separador('=')
-  t.filaDestacada('TOTAL', money(venta.total))
-  t.separador('-')
+  t.centroNegrita('TOTAL A PAGAR')
+  t.centroGrande(money(venta.total))
+  t.separador('=')
 
   // fila() en vez de negrita() con texto concatenado: asi el monto queda
   // alineado al borde derecho, igual que en el ticket HTML (.row-pago usa
@@ -266,7 +305,7 @@ export function construirTicketEscPos(
     t.filaNegrita(l.etiqueta, money(l.monto))
   }
   if (admiteVuelto(venta.metodo) && venta.vuelto > 0) {
-    t.fila('Vuelto', money(venta.vuelto))
+    t.filaNegrita('Vuelto', money(venta.vuelto))
   }
   if (venta.clienteNombre) {
     t.fila('Fiado a', venta.clienteNombre)
