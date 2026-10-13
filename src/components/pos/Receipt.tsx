@@ -9,6 +9,7 @@ import { admiteVuelto, lineasPago, metodoParaQr } from '@/utils/pagos'
 import { useNegocio, textoDocumento } from '@/config/negocio'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
+import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import { qrParaTicket } from '@/utils/qrTermico'
 import type { ItemCarrito, Venta } from '@/types/database'
@@ -170,34 +171,14 @@ export function Receipt({ open, onClose, venta, items }: Props) {
         </div>
 
         <hr className="my-2 border-t-2 border-black" />
-        <div className="mb-1.5 flex justify-between text-[0.7rem] font-black tracking-wide">
-          <span>DESCRIPCIÓN</span>
-          <span>IMPORTE</span>
-        </div>
 
         {/* Items */}
-        <div className="space-y-2">
-          {items.map((i) => (
-            <div key={`${i.producto.id}::${i.modalidad}`}>
-              <p className="break-words font-bold">
-                {i.producto.nombre}
-                {etiquetaModalidadDe(i.producto, i.modalidad) && (
-                  <span className="ml-1 text-[0.7rem] font-black uppercase">
-                    [{etiquetaModalidadDe(i.producto, i.modalidad)}]
-                  </span>
-                )}
-              </p>
-              <div className="flex justify-between gap-2 pl-2">
-                <span className="tabular min-w-0">
-                  {cantidadTicket(i)} x {money(precioItem(i))}
-                </span>
-                <span className="tabular shrink-0 font-black">
-                  {money(precioItem(i) * i.cantidad)}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
+        <TicketItemsPreview
+          lineas={datosTicket().lineas.map((l, idx) => ({
+            ...l,
+            key: `${items[idx].producto.id}::${items[idx].modalidad}`,
+          }))}
+        />
 
         <hr className="my-2 border-dashed border-black" />
 

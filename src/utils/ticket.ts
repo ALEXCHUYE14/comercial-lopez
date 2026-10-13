@@ -30,16 +30,22 @@ export interface TicketLinea {
   cantidadTexto: string
   nombre: string
   tag?: string
-  /** Precio unitario ya formateado ("S/ 3.50"); se imprime "2 x S/ 3.50". */
+  /** Precio unitario ya formateado ("S/ 3.50"). */
   precioUnitarioTexto?: string
   montoTexto: string
 }
 
-/** Detalle que va debajo del nombre: "2 x S/ 3.50" (o "Cant.: 2" sin precio). */
-export function detalleLinea(l: TicketLinea): string {
-  return l.precioUnitarioTexto
-    ? `${l.cantidadTexto} x ${l.precioUnitarioTexto}`
-    : `Cant.: ${l.cantidadTexto}`
+/**
+ * Linea secundaria (opcional) bajo el nombre del producto: presentacion y
+ * precio unitario, ej. "Docena · P.U. S/ 10.00". Se omite cuando no aporta
+ * nada (1 unidad sin presentacion: el P.U. seria igual al importe), para que
+ * el listado quede limpio — una sola linea por producto en el caso comun.
+ */
+export function subLinea(l: TicketLinea): string | null {
+  const partes: string[] = []
+  if (l.tag) partes.push(l.tag)
+  if (l.precioUnitarioTexto && l.cantidadTexto !== '1') partes.push(`P.U. ${l.precioUnitarioTexto}`)
+  return partes.length ? partes.join(' · ') : null
 }
 
 export interface TicketDatos {
@@ -114,17 +120,20 @@ export function construirTicketHtml(
     .map((l) => `<div class="sub-header">${escaparHtml(l)}</div>`)
     .join('')
 
-  // Cada item: nombre en su propia linea (nunca se corta por falta de
-  // espacio) y debajo "cantidad x precio unitario" con el importe a la
-  // derecha — asi el cliente puede verificar cada cobro de un vistazo.
+  // Listado en tabla de 3 columnas alineadas (CANT | DESCRIPCION | IMPORTE),
+  // una fila por producto. El nombre nunca se recorta: si es largo pasa a la
+  // linea siguiente dentro de su columna. La linea secundaria (presentacion /
+  // precio unitario) solo aparece cuando aporta informacion (ver subLinea).
   const filas = lineas
-    .map(
-      (l) => `
-      <div class="item">
-        <div class="item-nombre">${escaparHtml(l.nombre)}${l.tag ? ` <span class="tag">[${escaparHtml(l.tag)}]</span>` : ''}</div>
-        <div class="item-detalle"><span>${escaparHtml(detalleLinea(l))}</span><span class="item-monto">${escaparHtml(l.montoTexto)}</span></div>
-      </div>`,
-    )
+    .map((l) => {
+      const sub = subLinea(l)
+      return `
+      <tr>
+        <td class="c-cant">${escaparHtml(l.cantidadTexto)}</td>
+        <td class="c-desc">${escaparHtml(l.nombre)}${sub ? `<div class="sub">${escaparHtml(sub)}</div>` : ''}</td>
+        <td class="c-imp">${escaparHtml(l.montoTexto)}</td>
+      </tr>`
+    })
     .join('')
 
   const qrBloque = qr
@@ -193,28 +202,21 @@ export function construirTicketHtml(
       padding: 1.5mm;
     }
 
-    /* Cabecera de columnas */
-    .cols {
-      display: flex;
-      justify-content: space-between;
-      font-size: 9.5pt;
+    /* Listado de productos */
+    .items { width: 100%; border-collapse: collapse; table-layout: auto; }
+    .items th {
+      font-size: 9pt;
       font-weight: 900;
-      margin-bottom: 1.5mm;
+      text-align: left;
+      padding: 0 0 1.2mm;
+      border-bottom: 1.5px solid #000;
     }
-
-    /* Items del carrito */
-    .item { margin-bottom: 2mm; break-inside: avoid; }
-    .item-nombre { font-size: 11.5pt; font-weight: 900; line-height: 1.3; word-break: break-word; }
-    .tag { font-size: 9.5pt; font-weight: 900; }
-    .item-detalle {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 3mm;
-      padding-left: 3mm;
-      font-size: 10.5pt;
-    }
-    .item-monto { flex-shrink: 0; font-size: 11.5pt; font-weight: 900; text-align: right; }
+    .items td { font-size: 10.5pt; font-weight: 700; line-height: 1.3; padding: 1.2mm 0 0; vertical-align: top; }
+    .items tr { break-inside: avoid; }
+    .items .c-cant { width: 1%; white-space: nowrap; padding-right: 2.5mm; }
+    .items .c-desc { word-break: break-word; }
+    .items .c-imp { width: 1%; white-space: nowrap; text-align: right; padding-left: 2.5mm; }
+    .items .sub { font-size: 9pt; font-weight: 700; margin-top: 0.3mm; }
 
     /* Metodo de pago y vuelto */
     .row-pago { font-size: 12pt; font-weight: 900; }
@@ -248,8 +250,13 @@ export function construirTicketHtml(
 
   <hr class="sep-solid"/>
 
-  <div class="cols"><span>DESCRIPCIÓN</span><span>IMPORTE</span></div>
-  ${filas}
+  <table class="items">
+    <thead>
+      <tr><th class="c-cant">CANT</th><th class="c-desc">DESCRIPCIÓN</th><th class="c-imp">IMPORTE</th></tr>
+    </thead>
+    <tbody>${filas}
+    </tbody>
+  </table>
 
   <hr class="sep-dash"/>
 

@@ -34,6 +34,7 @@ import { admiteVuelto, lineasPago, metodoParaQr, montoPorMetodo, textoPagos } fr
 import { etiquetaModalidad } from '@/utils/presentaciones'
 import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
+import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import { qrParaTicket } from '@/utils/qrTermico'
 import type { DetalleVenta, MetodoPago, Perfil, Venta } from '@/types/database'
@@ -881,41 +882,24 @@ function TicketReprint({
         </div>
 
         <div className="border-t-2 border-black pt-2">
-          <div className="mb-1.5 flex justify-between text-[0.7rem] font-black tracking-wide">
-            <span>DESCRIPCIÓN</span>
-            <span>IMPORTE</span>
-          </div>
           {cargando ? (
             <div className="grid place-items-center py-6">
               <Spinner className="size-5" />
             </div>
           ) : (
-            <div className="space-y-2">
-              {detalle.map((d) => (
-                <div key={d.id}>
-                  <p className="break-words font-bold">
-                    {d.producto_nombre}
-                    {etiquetaDetalle(d) && (
-                      <span className="ml-1 text-[0.7rem] font-black uppercase">[{etiquetaDetalle(d)}]</span>
-                    )}
-                  </p>
-                  <div className="flex justify-between gap-2 pl-2">
-                    <span className="tabular min-w-0">
-                      {cantidad(Number(d.cantidad))} x {money(Number(d.precio_unitario))}
-                    </span>
-                    <span className="tabular shrink-0 font-black">{money(Number(d.subtotal))}</span>
-                  </div>
-                  {/* Equivalente real descontado del stock (en unidad base) cuando
-                      la venta fue por caja, saco, arroba, docena, etc. Solo en
-                      pantalla, para el personal; no va en el ticket impreso. */}
-                  {etiquetaDetalle(d) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad) && (
-                    <p className="pl-2 text-xs font-medium text-ink-700">
-                      Descuenta {cantidad(Number(d.unidades))} del stock
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
+            <TicketItemsPreview
+              lineas={(datosTicket()?.lineas ?? []).map((l, idx) => {
+                const d = detalle[idx]
+                // Equivalente real descontado del stock (en unidad base) cuando
+                // la venta fue por caja, saco, docena, etc. — dato para el
+                // personal, va como tooltip para no recargar el listado.
+                const nota =
+                  etiquetaDetalle(d) && Number(d.unidades) > 0 && Number(d.unidades) !== Number(d.cantidad)
+                    ? `Descuenta ${cantidad(Number(d.unidades))} del stock`
+                    : undefined
+                return { ...l, key: d.id, nota }
+              })}
+            />
           )}
         </div>
 

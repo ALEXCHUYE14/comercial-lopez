@@ -7,7 +7,7 @@
 import { money, fechaHora } from '@/utils/format'
 import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { QrTermico } from '@/utils/qrTermico'
-import { detalleLinea, type TicketDatos, type TicketLinea } from '@/utils/ticket'
+import { subLinea, type TicketDatos, type TicketLinea } from '@/utils/ticket'
 import { admiteVuelto, lineasPago } from '@/utils/pagos'
 
 const ETIQUETA_METODO: Record<string, string> = {
@@ -61,7 +61,7 @@ const MAPA_CP850: Record<string, number> = {
   Á: 0xb5, É: 0x90, Í: 0xd6, Ó: 0xe0, Ú: 0xe9,
   ñ: 0xa4, Ñ: 0xa5,
   ü: 0x81, Ü: 0x9a,
-  '¿': 0xa8, '¡': 0xad, '°': 0xf8,
+  '¿': 0xa8, '¡': 0xad, '°': 0xf8, '·': 0xfa,
 }
 
 function textoABytes(texto: string): number[] {
@@ -112,9 +112,36 @@ function envolver(texto: string, ancho = COLUMNAS): string[] {
   return lineas.length ? lineas : ['']
 }
 
-/** "IZQ      DER" ocupando exactamente el ancho del papel. */
-function alinearColumnas(izq: string, der: string): string {
-  return izq + ' '.repeat(Math.max(1, COLUMNAS - izq.length - der.length)) + der
+/**
+ * Listado de productos en 3 columnas alineadas (CANT | DESCRIPCION |
+ * IMPORTE), igual que la tabla del ticket HTML. El ancho de CANT e IMPORTE se
+ * ajusta a los valores de este ticket y DESCRIPCION usa el resto; el nombre
+ * se envuelve por palabras dentro de su columna (nunca se recorta) y la
+ * linea secundaria (presentacion / P.U.) va sangrada bajo la descripcion.
+ * Cantidades y montos nunca se recortan (un dato truncado seria un cobro
+ * ilegible); con valores normales cada linea mide a lo sumo COLUMNAS.
+ */
+function tablaProductos(lineas: TicketLinea[]): { cabecera: string; filas: string[] } {
+  const anchoCant = Math.min(10, Math.max(4, ...lineas.map((l) => l.cantidadTexto.length)))
+  const anchoImp = Math.min(14, Math.max(7, ...lineas.map((l) => l.montoTexto.length)))
+  const anchoDesc = COLUMNAS - anchoCant - anchoImp - 2
+  const sangria = ' '.repeat(anchoCant + 1)
+
+  const cabecera =
+    'CANT'.padEnd(anchoCant) + ' ' + 'DESCRIPCION'.slice(0, anchoDesc).padEnd(anchoDesc) + ' ' + 'IMPORTE'.padStart(anchoImp)
+
+  const filas: string[] = []
+  for (const l of lineas) {
+    const desc = envolver(l.nombre, anchoDesc)
+    filas.push(
+      l.cantidadTexto.padEnd(anchoCant) + ' ' + desc[0].padEnd(anchoDesc) + ' ' +
+        l.montoTexto.padStart(anchoImp),
+    )
+    for (const extra of desc.slice(1)) filas.push(sangria + extra)
+    const sub = subLinea(l)
+    if (sub) for (const extra of envolver(sub, COLUMNAS - sangria.length)) filas.push(sangria + extra)
+  }
+  return { cabecera, filas }
 }
 
 // Exportada (ademas de usarse internamente en este archivo) para que otros
@@ -277,15 +304,10 @@ export function construirTicketEscPos(
   }
 
   t.separador('=')
-  t.negrita(alinearColumnas('DESCRIPCION', 'IMPORTE'))
+  const tabla = tablaProductos(lineas)
+  t.negrita(tabla.cabecera)
   t.separador('-')
-
-  // Mismo formato que el ticket HTML: nombre (en negrita, envuelto por
-  // palabras) y debajo "cantidad x precio" con el importe a la derecha.
-  for (const l of lineas) {
-    t.negrita(`${l.nombre}${l.tag ? ` [${l.tag}]` : ''}`)
-    t.filaNegrita(`  ${detalleLinea(l)}`, l.montoTexto)
-  }
+  for (const l of tabla.filas) t.negrita(l)
 
   t.separador('-')
   t.fila('Subtotal', money(venta.subtotal))
