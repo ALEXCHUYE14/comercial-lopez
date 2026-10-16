@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, Search, AlertTriangle, TrendingDown } from 'lucide-react'
+import { Plus, Trash2, Search, AlertTriangle, TrendingDown, FileSpreadsheet, Upload } from 'lucide-react'
 import { useMermas, ETIQUETA_MOTIVO } from '@/hooks/useMermas'
 import { useProductos } from '@/hooks/useProductos'
 import { useAuth } from '@/context/AuthContext'
@@ -7,6 +7,8 @@ import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cx } from '@/utils/format'
+import { exportarMermasExcel } from '@/utils/mermasExcel'
+import { ImportarMermas } from '@/components/mermas/ImportarMermas'
 import type { MotivoMerma } from '@/types/database'
 
 const MOTIVOS: MotivoMerma[] = ['vencido', 'danado', 'consumo_interno', 'otro']
@@ -36,12 +38,27 @@ export function Mermas() {
   // that would occur if inicioMes()/finHoy() were called inline (new object each render).
   const desdeRef = useRef(inicioMes())
   const hastaRef = useRef(finHoy())
-  const { mermas, cargando, registrar, costoTotal } = useMermas(desdeRef.current, hastaRef.current)
+  const { mermas, cargando, cargar, registrar, costoTotal } = useMermas(desdeRef.current, hastaRef.current)
   const { productos } = useProductos()
-  const { esAdmin } = useAuth()
+  const { esAdmin, puedeVerReportes } = useAuth()
   const toast = useToast()
 
   const [formOpen, setFormOpen] = useState(false)
+  const [importarOpen, setImportarOpen] = useState(false)
+  const [exportando, setExportando] = useState(false)
+
+  // Backup: exporta el historial COMPLETO (todas las fechas), no solo el mes.
+  async function exportar() {
+    setExportando(true)
+    try {
+      const n = await exportarMermasExcel()
+      toast.exito(`Mermas descargadas en Excel (${n} registro${n === 1 ? '' : 's'})`)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudo exportar las mermas')
+    } finally {
+      setExportando(false)
+    }
+  }
   const [guardando, setGuardando] = useState(false)
   const [busqProd, setBusqProd] = useState('')
   const [f, setF] = useState({
@@ -114,7 +131,7 @@ export function Mermas() {
     MOTIVOS.forEach((m) => mapa.set(m, { cantidad: 0, costo: 0 }))
     mermas.forEach((m) => {
       const prev = mapa.get(m.motivo)!
-      mapa.set(m.motivo, { cantidad: prev.cantidad + m.cantidad, costo: prev.costo + m.costo_total })
+      mapa.set(m.motivo, { cantidad: prev.cantidad + Number(m.cantidad || 0), costo: prev.costo + Number(m.costo_total || 0) })
     })
     return mapa
   }, [mermas])
@@ -130,12 +147,26 @@ export function Mermas() {
             Productos dañados, vencidos o consumidos internamente — mes actual
           </p>
         </div>
-        {esAdmin && (
-          <Button variant="primary" onClick={() => { resetForm(); setFormOpen(true) }}>
-            <Plus className="size-[18px]" />
-            <span className="hidden sm:inline">Registrar merma</span>
-          </Button>
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {puedeVerReportes && (
+            <Button variant="outline" loading={exportando} onClick={exportar} title="Descargar todas las mermas (backup)">
+              <FileSpreadsheet className="size-4" />
+              <span className="hidden sm:inline">Exportar Excel</span>
+            </Button>
+          )}
+          {esAdmin && (
+            <Button variant="outline" onClick={() => setImportarOpen(true)} title="Importar mermas desde Excel">
+              <Upload className="size-4" />
+              <span className="hidden sm:inline">Importar Excel</span>
+            </Button>
+          )}
+          {esAdmin && (
+            <Button variant="primary" onClick={() => { resetForm(); setFormOpen(true) }}>
+              <Plus className="size-[18px]" />
+              <span className="hidden sm:inline">Registrar merma</span>
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* KPIs del mes */}
@@ -226,6 +257,10 @@ export function Mermas() {
           </ul>
         )}
       </Card>
+
+      {esAdmin && (
+        <ImportarMermas open={importarOpen} onClose={() => setImportarOpen(false)} onListo={cargar} />
+      )}
 
       {/* Sheet: registrar merma */}
       <Sheet

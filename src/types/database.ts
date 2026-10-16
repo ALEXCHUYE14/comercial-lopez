@@ -395,6 +395,22 @@ export interface Database {
         Args: { p_filas: unknown }
         Returns: { fila: number; sku: string; accion: string; mensaje: string | null }[]
       }
+      registrar_merma: {
+        Args: {
+          p_producto_id: string | null
+          p_producto_nombre: string
+          p_cantidad: number
+          p_costo_unitario: number | null
+          p_motivo: MotivoMerma
+          p_descripcion?: string | null
+          p_fecha?: string | null
+        }
+        Returns: Merma
+      }
+      importar_mermas: {
+        Args: { p_filas: unknown }
+        Returns: { fila: number; producto: string; accion: string; mensaje: string | null }[]
+      }
       incrementar_caja: {
         Args: { p_caja_id: string; p_metodo: string; p_monto: number }
         Returns: void

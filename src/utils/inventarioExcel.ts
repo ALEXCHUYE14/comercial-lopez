@@ -51,7 +51,7 @@ function siNo(v: boolean): string {
 // de escribir la celda, en cada campo de texto que puede venir de datos
 // reales (nombre, SKU, categoria, unidad) — nunca en los que arma el propio
 // codigo (SI/NO, "unidad"/"granel", fechas AAAA-MM-DD).
-function textoSeguro(v: string): string {
+export function textoSeguro(v: string): string {
   // eslint-disable-next-line no-control-regex
   return v.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
 }
@@ -61,7 +61,7 @@ function textoSeguro(v: string): string {
 // esas validaciones es posible) tambien produce un .xlsx invalido: se
 // escribe como numero pero "NaN"/"Infinity" no son valores numericos
 // validos en el XML de la hoja. Se cambia a 0 en vez de dejarlo pasar.
-function numeroSeguro(v: number | null | undefined): number | '' {
+export function numeroSeguro(v: number | null | undefined): number | '' {
   if (v === null || v === undefined) return ''
   return Number.isFinite(v) ? v : 0
 }
@@ -190,7 +190,7 @@ const CAMPOS_NUMERICOS = new Set<keyof FilaInventario>([
 
 const ENCABEZADO_STOCK_EXPORTADO_NORM = normalizarEncabezado(ENCABEZADO_STOCK_EXPORTADO)
 
-function normalizarEncabezado(s: string): string {
+export function normalizarEncabezado(s: string): string {
   return s
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '') // quita tildes
