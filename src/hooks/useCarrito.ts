@@ -85,6 +85,38 @@ export function reconstruirCarrito(lineas: LineaGuardada[], productos: Producto[
   return { items, omitidas, ajustadas }
 }
 
+export interface CarritoSincronizado extends CarritoReconstruido {
+  /** Hubo algun cambio respecto del carrito actual (precio, stock, producto). */
+  cambio: boolean
+  /** Lineas cuyo precio cambio (el administrador lo edito mientras tanto). */
+  preciosCambiados: number
+}
+
+/** Pone al dia el carrito en curso con los productos ACTUALES. Cada linea
+ * guarda una copia del producto del momento en que se agrego: sin esto, si el
+ * administrador cambiaba un precio (o otro equipo vendia stock) con el
+ * carrito ya armado, el POS seguia mostrando y cobrando el precio viejo
+ * mientras el servidor registraba la venta con el nuevo — el total cobrado,
+ * el ticket y el vuelto no coincidian con lo registrado. Función pura. */
+export function sincronizarCarrito(items: ItemCarrito[], productos: Producto[]): CarritoSincronizado {
+  const r = reconstruirCarrito(
+    items.map((i) => ({ productoId: i.producto.id, modalidad: i.modalidad, cantidad: i.cantidad })),
+    productos,
+  )
+  let preciosCambiados = 0
+  let cambio = r.items.length !== items.length
+  for (const nuevo of r.items) {
+    const viejo = items.find((i) => i.producto.id === nuevo.producto.id && i.modalidad === nuevo.modalidad)
+    if (!viejo) {
+      cambio = true
+      continue
+    }
+    if (viejo.producto !== nuevo.producto || Math.abs(viejo.cantidad - nuevo.cantidad) > 1e-9) cambio = true
+    if (Math.abs(precioItem(viejo) - precioItem(nuevo)) > 0.0001) preciosCambiados++
+  }
+  return { ...r, cambio, preciosCambiados }
+}
+
 export function useCarrito() {
   const [items, setItems] = useState<ItemCarrito[]>([])
   const [descuento, setDescuento] = useState(0)

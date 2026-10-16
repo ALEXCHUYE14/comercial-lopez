@@ -44,10 +44,22 @@ export default defineConfig({
         // service worker, para que nunca sirva JS/CSS de un despliegue viejo.
         cleanupOutdatedCaches: true,
         runtimeCaching: [
+          // Datos de Supabase (productos, precios, stock, ventas...): SIEMPRE
+          // de la red; la copia guardada solo se usa si NO hay conexion (para
+          // que el POS abra offline). Antes tenia networkTimeoutSeconds: 5 —
+          // con internet lento (respuesta en mas de 5 s) el service worker
+          // servia la copia vieja del cache aunque hubiera red, y el POS
+          // mostraba precios y stock desactualizados sin ningun aviso. Tambien
+          // se limita la antiguedad de la copia (24 h) y se cambio el nombre
+          // del cache para descartar las copias viejas ya guardadas.
           {
             urlPattern: ({ url }) => url.pathname.startsWith('/rest/v1'),
             handler: 'NetworkFirst',
-            options: { cacheName: 'supabase-api', networkTimeoutSeconds: 5 },
+            options: {
+              cacheName: 'supabase-api-v2',
+              expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 },
+              cacheableResponse: { statuses: [200] },
+            },
           },
           // Fotos de productos/negocio (bucket de Storage): la URL guardada
           // en la base ya lleva su propio "?t=" que cambia solo cuando la

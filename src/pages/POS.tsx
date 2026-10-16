@@ -16,7 +16,7 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import { useProductos } from '@/hooks/useProductos'
-import { reconstruirCarrito, useCarrito } from '@/hooks/useCarrito'
+import { reconstruirCarrito, sincronizarCarrito, useCarrito } from '@/hooks/useCarrito'
 import { useClientes } from '@/hooks/useClientes'
 import { useKeyboardScanner } from '@/hooks/useKeyboardScanner'
 import { useVentasOffline } from '@/hooks/useVentasOffline'
@@ -125,6 +125,32 @@ export function POS() {
   const [carritoMovil, setCarritoMovil] = useState(false)
   const [pagoAbierto, setPagoAbierto] = useState(false)
   const [procesando, setProcesando] = useState(false)
+
+  // 1b) Mantiene el carrito al dia con los productos vigentes: si mientras se
+  //     arma una venta el administrador cambia un precio, o se vende stock en
+  //     otro equipo, las lineas se actualizan (precio, tope de stock) y se
+  //     avisa. Lee el carrito por ref para reaccionar SOLO a cambios de
+  //     productos, no a cada cambio del carrito.
+  //     No se toca durante un cobro en curso (el propio descuento de stock
+  //     de esa venta llega por realtime antes de vaciar el carrito).
+  const carritoRef = useRef(carrito)
+  useEffect(() => {
+    carritoRef.current = carrito
+  })
+  useEffect(() => {
+    if (!carritoListo || procesando) return
+    const actual = carritoRef.current
+    if (actual.items.length === 0) return
+    const r = sincronizarCarrito(actual.items, productos)
+    if (!r.cambio) return
+    actual.restaurar(r.items, actual.descuento)
+    const avisos: string[] = []
+    if (r.preciosCambiados > 0) avisos.push(`${r.preciosCambiados} precio(s) se actualizaron`)
+    if (r.ajustadas > 0) avisos.push(`${r.ajustadas} cantidad(es) se ajustaron al stock disponible`)
+    if (r.omitidas > 0) avisos.push(`${r.omitidas} producto(s) se quitaron por falta de stock o porque ya no están disponibles`)
+    if (avisos.length) toast.info(`Carrito actualizado: ${avisos.join('; ')}.`)
+  }, [productos, carritoListo, procesando, toast])
+
   const [ventaHecha, setVentaHecha] = useState<Venta | null>(null)
   const [itemsTicket, setItemsTicket] = useState<ItemCarrito[]>([])
   const [abrirCajaOpen, setAbrirCajaOpen] = useState(false)
@@ -385,6 +411,17 @@ export function POS() {
       // el cobro ya completado.
       let advertencia: string | null = null
 
+      // Total REAL que registro el servidor (calcula los precios vigentes en
+      // la base, nunca confia en los del navegador). Es el que se usa para la
+      // caja en pantalla y la deuda del fiado: si un precio cambio en el
+      // ultimo instante, el total del carrito podria diferir del registrado.
+      const ventaRegistrada = data as unknown as Venta
+      const totalRegistrado = Number(ventaRegistrada?.total)
+      const totalVenta = Number.isFinite(totalRegistrado) ? totalRegistrado : carrito.totales.total
+      if (Math.abs(totalVenta - carrito.totales.total) > 0.004) {
+        advertencia = `Un precio cambió mientras se cobraba: la venta se registró por ${money(totalVenta)} (el carrito mostraba ${money(carrito.totales.total)}).`
+      }
+
       // El servidor YA acredito la caja dentro de registrar_venta: aqui solo
       // se refleja en pantalla (sin RPC) para que el total mostrado no quede
       // desfasado hasta el proximo refresco. Antes esto era una segunda
@@ -400,7 +437,7 @@ export function POS() {
           // Cada parte suma al acumulado de SU metodo (efectivo / yape).
           for (const p of pagos ?? []) aplicarVentaLocal(caja.id, p.metodo, p.monto)
         } else if (metodo === 'efectivo' || metodo === 'yape' || metodo === 'fiado') {
-          aplicarVentaLocal(caja.id, metodo, carrito.totales.total)
+          aplicarVentaLocal(caja.id, metodo, totalVenta)
         }
       }
 
@@ -413,7 +450,7 @@ export function POS() {
           // silencio: la venta quedaba al fiado sin deuda cargada.
           const { error: errCargo } = await supabase.rpc('registrar_cargo_fiado', {
             p_cliente_id: clienteId,
-            p_monto: carrito.totales.total,
+            p_monto: totalVenta,
           })
           if (errCargo) throw new Error(errCargo.message)
         } catch (e) {
@@ -423,9 +460,10 @@ export function POS() {
           // servidor en vez de un mensaje generico, para que el cajero sepa
           // que la deuda de este cliente quedo sin actualizar y por que.
           const motivo = e instanceof Error ? e.message : null
-          advertencia = motivo
+          const avisoDeuda = motivo
             ? `La venta se registró, pero no se pudo cargar la deuda al cliente: ${motivo}`
             : 'La venta se registró, pero no se pudo cargar la deuda al cliente. Avisa al administrador.'
+          advertencia = advertencia ? `${avisoDeuda} ${advertencia}` : avisoDeuda
         }
       }
 

@@ -17,6 +17,13 @@ window.addEventListener('vite:preloadError', () => {
   }
 })
 
+// Borra el cache de datos de Supabase de versiones anteriores del service
+// worker ("supabase-api"), que podia servir precios y stock viejos. El nuevo
+// cache ("supabase-api-v2", ver vite.config.ts) solo se usa sin conexion.
+if ('caches' in window) {
+  caches.delete('supabase-api').catch(() => undefined)
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary>

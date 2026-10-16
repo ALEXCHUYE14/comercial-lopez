@@ -1,32 +1,88 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Categoria, Producto } from '@/types/database'
+
+// Supabase (PostgREST) devuelve como maximo 1000 filas por consulta: con mas
+// productos que eso, los que quedaban fuera simplemente no aparecian (ni se
+// actualizaban) en el POS. Se piden en paginas hasta traerlos todos.
+const TAM_PAGINA = 1000
+
+// Volver a la pestaña/app o recuperar internet dispara una recarga completa;
+// este minimo evita repetirla varias veces seguidas (ej. alt-tab rapido).
+const MIN_MS_ENTRE_RECARGAS = 15_000
+
+async function traerTodosLosProductos(): Promise<Producto[]> {
+  const todos: Producto[] = []
+  for (let desde = 0; ; desde += TAM_PAGINA) {
+    const { data, error } = await supabase
+      .from('productos')
+      .select('*, categorias(*)')
+      .eq('activo', true)
+      .order('nombre')
+      .order('id')
+      .range(desde, desde + TAM_PAGINA - 1)
+    if (error) throw error
+    todos.push(...((data ?? []) as Producto[]))
+    if (!data || data.length < TAM_PAGINA) return todos
+  }
+}
+
+/** true si `a` es una version MAS NUEVA que `b` del mismo producto. */
+function esMasNuevo(a: Producto, b: Producto): boolean {
+  const ta = Date.parse(a.actualizado_en)
+  const tb = Date.parse(b.actualizado_en)
+  return Number.isFinite(ta) && Number.isFinite(tb) && ta > tb
+}
 
 export function useProductos() {
   const [productos, setProductos] = useState<Producto[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
   const [cargando, setCargando] = useState(true)
+  const categoriasRef = useRef<Categoria[]>([])
+  const ultimaRecargaRef = useRef(0)
+  const peticionRef = useRef(0)
 
   const cargar = useCallback(async () => {
-    const [prodRes, catRes] = await Promise.all([
-      supabase
-        .from('productos')
-        .select('*, categorias(*)')
-        .eq('activo', true)
-        .order('nombre'),
-      supabase.from('categorias').select('*').order('nombre'),
-    ])
-    setProductos(prodRes.data ?? [])
-    setCategorias(catRes.data ?? [])
-    setCargando(false)
+    const id = ++peticionRef.current
+    ultimaRecargaRef.current = Date.now()
+    try {
+      const [prods, catRes] = await Promise.all([
+        traerTodosLosProductos(),
+        supabase.from('categorias').select('*').order('nombre'),
+      ])
+      // Una recarga mas reciente ya esta en camino: esta respuesta es vieja.
+      if (id !== peticionRef.current) return
+      if (!catRes.error) {
+        categoriasRef.current = catRes.data ?? []
+        setCategorias(catRes.data ?? [])
+      }
+      setProductos((prev) => {
+        // Un cambio que llego por realtime MIENTRAS esta consulta viajaba es
+        // mas nuevo que lo que trajo la consulta: no se debe pisar con el dato
+        // viejo (seria justo un precio/stock "desactualizado").
+        const previos = new Map(prev.map((p) => [p.id, p]))
+        return prods.map((p) => {
+          const actual = previos.get(p.id)
+          return actual && esMasNuevo(actual, p) ? { ...actual, categorias: p.categorias } : p
+        })
+      })
+    } catch {
+      // Sin conexion o error del servidor: se CONSERVA la lista que ya habia
+      // (antes se vaciaba y el POS quedaba sin productos). Se reintenta al
+      // volver la conexion o al regresar a la app.
+    } finally {
+      if (id === peticionRef.current) setCargando(false)
+    }
   }, [])
 
   useEffect(() => {
     cargar()
 
-    // Realtime: cualquier cambio de stock/producto se refleja al instante.
+    let suscritoAntes = false
+    // Nombre unico por instancia: varias pantallas montadas a la vez no deben
+    // compartir (ni cerrarse entre si) el mismo canal.
     const canal = supabase
-      .channel('rt-productos')
+      .channel(`rt-productos-${Math.random().toString(36).slice(2)}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'productos' },
@@ -36,20 +92,48 @@ export function useProductos() {
               return prev.filter((p) => p.id !== (payload.old as Producto).id)
             }
             const nuevo = payload.new as Producto
+            if (!nuevo?.id) return prev
             if (!nuevo.activo) return prev.filter((p) => p.id !== nuevo.id)
-            const existe = prev.some((p) => p.id === nuevo.id)
-            // Conserva la categoria embebida si ya la teniamos
             const previo = prev.find((p) => p.id === nuevo.id)
-            const fusion = { ...nuevo, categorias: previo?.categorias ?? null }
-            return existe
+            // Un evento atrasado nunca debe revertir un dato mas reciente.
+            if (previo && esMasNuevo(previo, nuevo)) return prev
+            // El evento no trae la categoria embebida: se toma de la lista de
+            // categorias (por si cambio de categoria) o se conserva la previa.
+            const categoria =
+              categoriasRef.current.find((c) => c.id === nuevo.categoria_id) ??
+              (previo?.categoria_id === nuevo.categoria_id ? previo?.categorias : null) ??
+              null
+            const fusion = { ...nuevo, categorias: categoria }
+            return previo
               ? prev.map((p) => (p.id === nuevo.id ? fusion : p))
               : [...prev, fusion].sort((a, b) => a.nombre.localeCompare(b.nombre))
           })
         },
       )
-      .subscribe()
+      .subscribe((estado) => {
+        // Mientras el canal estuvo caido (internet intermitente, equipo
+        // suspendido, pestaña en segundo plano) los cambios de precio/stock
+        // de ese lapso se PERDIERON — realtime no los reenvia. Al volver a
+        // suscribirse se recarga todo para no quedarse con datos viejos.
+        if (estado === 'SUBSCRIBED') {
+          if (suscritoAntes) cargar()
+          suscritoAntes = true
+        }
+      })
+
+    function recargarSiHaceFalta() {
+      if (document.visibilityState !== 'visible') return
+      if (Date.now() - ultimaRecargaRef.current < MIN_MS_ENTRE_RECARGAS) return
+      cargar()
+    }
+    document.addEventListener('visibilitychange', recargarSiHaceFalta)
+    window.addEventListener('online', recargarSiHaceFalta)
+    window.addEventListener('focus', recargarSiHaceFalta)
 
     return () => {
+      document.removeEventListener('visibilitychange', recargarSiHaceFalta)
+      window.removeEventListener('online', recargarSiHaceFalta)
+      window.removeEventListener('focus', recargarSiHaceFalta)
       supabase.removeChannel(canal)
     }
   }, [cargar])

@@ -14,6 +14,14 @@ import type { Producto } from '@/types/database'
 
 const HOJA = 'Inventario'
 
+// Columna de referencia (no se edita): el stock que tenia cada producto en el
+// momento de descargar el archivo. Al volver a subirlo, si "Stock actual" no
+// se modifico (sigue igual a esta referencia), el stock NO se toca. Sin esto,
+// un archivo descargado en la mañana y subido en la tarde (para cambiar
+// precios, por ejemplo) devolvia el stock al valor de la mañana y "borraba"
+// todo lo vendido en el dia — stock desactualizado.
+const ENCABEZADO_STOCK_EXPORTADO = 'Stock al descargar (NO EDITAR)'
+
 // Encabezados EXACTOS que genera exportarInventarioExcel — son tambien los
 // que reconoce leerInventarioExcel al volver a subir el archivo, asi que el
 // propio archivo descargado sirve de plantilla para editar o agregar filas.
@@ -25,6 +33,7 @@ const ENCABEZADOS = [
   'Tiene saco (SI/NO)', 'Kg por saco', 'Precio venta saco',
   'Presentaciones (JSON)',
   'Vence (AAAA-MM-DD)', 'Activo (SI/NO)',
+  ENCABEZADO_STOCK_EXPORTADO,
 ] as const
 
 function siNo(v: boolean): string {
@@ -98,6 +107,7 @@ export async function exportarInventarioExcel(productos: Producto[]): Promise<vo
       presentacionesACelda(p),
       textoSeguro(p.fecha_vencimiento ?? ''),
       siNo(p.activo),
+      numeroSeguro(p.stock_actual),
     ]),
   ]
   const hoja = XLSX.utils.aoa_to_sheet(filas)
@@ -178,6 +188,8 @@ const CAMPOS_NUMERICOS = new Set<keyof FilaInventario>([
   'stock_actual', 'stock_minimo', 'unidades_por_caja', 'kg_por_saco', 'precio_venta_saco',
 ])
 
+const ENCABEZADO_STOCK_EXPORTADO_NORM = normalizarEncabezado(ENCABEZADO_STOCK_EXPORTADO)
+
 function normalizarEncabezado(s: string): string {
   return s
     .normalize('NFD')
@@ -196,13 +208,34 @@ function aBooleano(v: unknown): boolean | null {
   return null // valor no reconocido: se trata como "no indicado", no como error
 }
 
-function aNumero(v: unknown): number | null {
+/** Convierte una celda a numero. Las celdas numericas de Excel ya llegan como
+ * number; esto cubre las que vienen como TEXTO ("3.50", "3,50", "S/ 1,234.50",
+ * "1.234,5"). Antes se borraban todos los puntos antes de convertir, asi que un
+ * precio "3.50" escrito como texto se guardaba como 350 (y un stock "1.5" como
+ * 15). Regla: si hay punto y coma, el que aparece AL FINAL es el decimal; si
+ * hay un solo tipo de separador, es decimal salvo que se repita (miles, ej.
+ * "1.234.567") o que la coma vaya seguida de exactamente 3 digitos (miles,
+ * ej. "1,234"). */
+export function aNumero(v: unknown): number | null {
   if (v === null || v === undefined) return null
   if (typeof v === 'number') return Number.isFinite(v) ? v : null
-  const s = String(v).trim()
+  let s = String(v).trim().replace(/^s\/\.?\s*/i, '').replace(/\s/g, '')
   if (s === '') return null
-  // admite "1234,56" (coma decimal) ademas de "1234.56"
-  const n = Number(s.replace(/\./g, '').replace(',', '.')) || Number(s)
+  const ultPunto = s.lastIndexOf('.')
+  const ultComa = s.lastIndexOf(',')
+  if (ultPunto >= 0 && ultComa >= 0) {
+    const decimal = ultPunto > ultComa ? '.' : ','
+    const miles = decimal === '.' ? ',' : '.'
+    s = s.split(miles).join('').replace(decimal, '.')
+  } else if (ultComa >= 0) {
+    const partes = s.split(',')
+    const esMiles = partes.length > 2 || /^-?\d{1,3},\d{3}$/.test(s)
+    s = esMiles ? partes.join('') : s.replace(',', '.')
+  } else if (ultPunto >= 0 && s.split('.').length > 2) {
+    s = s.split('.').join('')
+  }
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)$/.test(s)) return null
+  const n = Number(s)
   return Number.isFinite(n) ? n : null
 }
 
@@ -250,8 +283,14 @@ export async function leerInventarioExcel(archivo: File): Promise<FilaInventario
       presentaciones: null,
       vence: null, activo: null,
     }
+    let stockExportado: number | null = null
     for (const [encabezadoOriginal, valor] of Object.entries(registro)) {
-      const campo = ALIAS[normalizarEncabezado(encabezadoOriginal)]
+      const encabezado = normalizarEncabezado(encabezadoOriginal)
+      if (encabezado === ENCABEZADO_STOCK_EXPORTADO_NORM) {
+        stockExportado = aNumero(valor)
+        continue
+      }
+      const campo = ALIAS[encabezado]
       if (!campo || campo === 'fila') continue
       if (campo === 'tipo_venta') {
         const t = aTexto(valor)
@@ -266,6 +305,16 @@ export async function leerInventarioExcel(archivo: File): Promise<FilaInventario
         ;(fila[campo] as string | null) = aTexto(valor)
       }
     }
+    // "Stock actual" sin modificar respecto de cuando se descargo el archivo:
+    // se envia como "no tocar" (null) para conservar el stock vigente, que
+    // pudo bajar por ventas hechas despues de descargar.
+    if (
+      fila.stock_actual !== null &&
+      stockExportado !== null &&
+      Math.abs(fila.stock_actual - stockExportado) < 1e-9
+    ) {
+      fila.stock_actual = null
+    }
     return fila
   })
 }
@@ -276,7 +325,7 @@ export async function descargarPlantillaInventario(): Promise<void> {
   const XLSX = await import('xlsx')
   const filas = [
     ENCABEZADOS as unknown as string[],
-    ['7501055300464', 'Coca Cola 500ml', 'Bebidas', 'unidad', 'unidad', 1.8, 3, '', 48, 12, 'NO', '', 'NO', '', '', '', '', 'SI'],
+    ['7501055300464', 'Coca Cola 500ml', 'Bebidas', 'unidad', 'unidad', 1.8, 3, '', 48, 12, 'NO', '', 'NO', '', '', '', '', 'SI', ''],
   ]
   const hoja = XLSX.utils.aoa_to_sheet(filas)
   hoja['!cols'] = ENCABEZADOS.map((h) => ({ wch: Math.max(h.length, 14) }))
