@@ -14,6 +14,26 @@ type ResultadoImportacion = {
   errores: ErrorFila[]
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** De los IDs del archivo, cuales existen en ESTE sistema. Un respaldo
+ * exportado de otra cuenta/proyecto trae IDs que aqui no existen: sin esto el
+ * servidor rechazaba esas filas ("El ID no existe") y, como la importacion es
+ * todo-o-nada, no se guardaba ningun cliente. */
+async function idsExistentes(filas: FilaCliente[]): Promise<Set<string>> {
+  const ids = [...new Set(filas.map((f) => f.id?.trim()).filter((x): x is string => !!x && UUID.test(x)))]
+  const existentes = new Set<string>()
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabase
+      .from('clientes_credito')
+      .select('id')
+      .in('id', ids.slice(i, i + 100))
+    if (error) throw new Error(`No se pudo consultar los clientes actuales: ${error.message}`)
+    for (const c of data ?? []) existentes.add(String(c.id).toLowerCase())
+  }
+  return existentes
+}
+
 export function ImportarClientes({
   open,
   onClose,
@@ -26,13 +46,16 @@ export function ImportarClientes({
   const toast = useToast()
   const [archivo, setArchivo] = useState<File | null>(null)
   const [filas, setFilas] = useState<FilaCliente[] | null>(null)
+  const [existentes, setExistentes] = useState<Set<string> | null>(null)
   const [leyendo, setLeyendo] = useState(false)
   const [importando, setImportando] = useState(false)
   const [resultado, setResultado] = useState<ResultadoImportacion | null>(null)
 
   function cerrar() {
+    if (importando) return
     setArchivo(null)
     setFilas(null)
+    setExistentes(null)
     setResultado(null)
     onClose()
   }
@@ -40,25 +63,34 @@ export function ImportarClientes({
   async function elegirArchivo(f: File) {
     setArchivo(f)
     setResultado(null)
+    setFilas(null)
+    setExistentes(null)
     setLeyendo(true)
     try {
-      setFilas(await leerClientesExcel(f))
+      const leidas = await leerClientesExcel(f)
+      setExistentes(await idsExistentes(leidas))
+      setFilas(leidas)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo leer el archivo. ¿Es un .xlsx válido?')
       setArchivo(null)
       setFilas(null)
+      setExistentes(null)
     } finally {
       setLeyendo(false)
     }
   }
 
   async function importar() {
-    if (!filas || filas.length === 0) return
+    if (!filas || filas.length === 0 || !existentes || importando) return
     setImportando(true)
     try {
       const payload = filas.map((f) => ({
         fila: f.fila,
-        id: f.id,
+        // ID de un respaldo de otra cuenta (no existe aqui): se crea como
+        // cliente nuevo, con su deuda ("Deuda inicial", que el Exportar llena
+        // con la deuda actual). Un ID con formato invalido se envia tal cual
+        // para que el servidor lo reporte como error de esa fila.
+        id: f.id && UUID.test(f.id.trim()) && !existentes.has(f.id.trim().toLowerCase()) ? null : f.id,
         nombre: f.nombre,
         telefono: f.telefono,
         direccion: f.direccion,
@@ -83,6 +115,11 @@ export function ImportarClientes({
     }
   }
 
+  const respaldoDeOtraCuenta =
+    filas && existentes
+      ? filas.filter((f) => f.id && UUID.test(f.id.trim()) && !existentes.has(f.id.trim().toLowerCase())).length
+      : 0
+
   return (
     <Sheet
       open={open}
@@ -97,7 +134,7 @@ export function ImportarClientes({
             </Button>
             <Button
               className="flex-1"
-              disabled={!filas || filas.length === 0 || leyendo || importando}
+              disabled={!filas || filas.length === 0 || !existentes || leyendo || importando}
               loading={importando}
               onClick={importar}
             >
@@ -157,6 +194,13 @@ export function ImportarClientes({
                 Se leyeron <b className="text-ink-800">{filas.length}</b> fila(s). Toca "Importar" para
                 continuar.
               </p>
+            )}
+            {filas && existentes && respaldoDeOtraCuenta > 0 && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800">
+                <b>{respaldoDeOtraCuenta}</b> cliente(s) del archivo vienen de un respaldo y no existen
+                en este sistema: se crearán como clientes nuevos <b>con su deuda</b> (columna "Deuda
+                inicial").
+              </div>
             )}
           </>
         )}

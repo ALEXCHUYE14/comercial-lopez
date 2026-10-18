@@ -146,6 +146,57 @@ export type FilaInventario = {
   activo: boolean | null
 }
 
+/** Fila tal como se leyo del archivo: incluye la columna de referencia
+ * "Stock al descargar", que NO se envia al servidor. */
+export type FilaLeida = FilaInventario & { stock_al_descargar: number | null }
+
+/** Producto ya existente en el sistema (por SKU) con su stock vigente. */
+export type StockExistente = Map<string, number>
+
+/**
+ * Decide que stock se envia por cada fila y quita la columna de referencia:
+ *  - SKU que NO existe en el sistema (producto nuevo, o base de datos nueva
+ *    al migrar/restaurar un respaldo): se usa SIEMPRE el "Stock actual" del
+ *    archivo. Antes una fila sin editar se mandaba como "no tocar" y, como el
+ *    producto no existia, quedaba con stock 0 — todo el inventario "agotado".
+ *  - `restaurarStock` = true (opcion "Restaurar stock del archivo"): se usa
+ *    el stock del archivo para todos los productos.
+ *  - SKU existente y "Stock actual" igual a "Stock al descargar" (no se
+ *    edito): no se toca, para no borrar lo vendido despues de descargar.
+ *  - SKU existente con el stock editado en el archivo: se aplica (queda en
+ *    el kardex como ajuste).
+ */
+export function prepararFilasInventario(
+  filas: FilaLeida[],
+  existentes: StockExistente,
+  restaurarStock: boolean,
+): FilaInventario[] {
+  return filas.map(({ stock_al_descargar, ...fila }) => {
+    const existe = fila.sku !== null && existentes.has(fila.sku.trim())
+    const sinEditar =
+      fila.stock_actual !== null &&
+      stock_al_descargar !== null &&
+      Math.abs(fila.stock_actual - stock_al_descargar) < 1e-9
+    if (existe && !restaurarStock && sinEditar) return { ...fila, stock_actual: null }
+    return fila
+  })
+}
+
+/** Cuantas filas de productos YA existentes no editaron el stock pero el
+ * sistema tiene un stock distinto al del archivo (ventas posteriores, o una
+ * importacion previa que los dejo en 0). Sirve para avisar y ofrecer
+ * "Restaurar stock del archivo". */
+export function contarStockDistinto(filas: FilaLeida[], existentes: StockExistente): number {
+  let n = 0
+  for (const f of filas) {
+    if (f.sku === null || f.stock_actual === null || f.stock_al_descargar === null) continue
+    const actual = existentes.get(f.sku.trim())
+    if (actual === undefined) continue
+    if (Math.abs(f.stock_actual - f.stock_al_descargar) < 1e-9 && Math.abs(actual - f.stock_actual) > 1e-9) n++
+  }
+  return n
+}
+
 // Alias de encabezado reconocidos (normalizados: sin tildes, minusculas, sin
 // espacios de mas) — para que el archivo siga leyendose bien aunque alguien
 // lo edite y cambie ligeramente el texto de una columna.
@@ -260,7 +311,7 @@ function aTexto(v: unknown): string | null {
  * reglas de negocio aqui (eso lo hace el servidor, fila por fila) — solo
  * interpreta el archivo: encabezados, numeros con coma decimal, SI/NO,
  * fechas, y celdas vacias como null (nunca como texto vacio). */
-export async function leerInventarioExcel(archivo: File): Promise<FilaInventario[]> {
+export async function leerInventarioExcel(archivo: File): Promise<FilaLeida[]> {
   const XLSX = await import('xlsx')
   const buffer = await archivo.arrayBuffer()
   const libro = XLSX.read(buffer, { type: 'array', cellDates: true })
@@ -305,17 +356,10 @@ export async function leerInventarioExcel(archivo: File): Promise<FilaInventario
         ;(fila[campo] as string | null) = aTexto(valor)
       }
     }
-    // "Stock actual" sin modificar respecto de cuando se descargo el archivo:
-    // se envia como "no tocar" (null) para conservar el stock vigente, que
-    // pudo bajar por ventas hechas despues de descargar.
-    if (
-      fila.stock_actual !== null &&
-      stockExportado !== null &&
-      Math.abs(fila.stock_actual - stockExportado) < 1e-9
-    ) {
-      fila.stock_actual = null
-    }
-    return fila
+    // La decision de si el stock se aplica o se conserva se toma recien al
+    // importar (ver prepararFilasInventario), cuando ya se sabe que SKUs
+    // existen en el sistema — aqui todavia no se sabe.
+    return { ...fila, stock_al_descargar: stockExportado }
   })
 }
 

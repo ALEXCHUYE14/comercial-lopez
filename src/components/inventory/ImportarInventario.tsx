@@ -4,9 +4,34 @@ import { supabase } from '@/lib/supabase'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
-import { leerInventarioExcel, descargarPlantillaInventario, type FilaInventario } from '@/utils/inventarioExcel'
+import {
+  leerInventarioExcel,
+  descargarPlantillaInventario,
+  prepararFilasInventario,
+  contarStockDistinto,
+  type FilaLeida,
+  type StockExistente,
+} from '@/utils/inventarioExcel'
 
 type ResultadoFila = { fila: number; sku: string; accion: string; mensaje: string | null }
+
+const TAM_PAGINA = 1000
+
+/** SKU -> stock vigente de TODOS los productos del sistema (activos o no: la
+ * importacion tambien actualiza los inactivos). */
+async function traerStockExistente(): Promise<StockExistente> {
+  const mapa: StockExistente = new Map()
+  for (let desde = 0; ; desde += TAM_PAGINA) {
+    const { data, error } = await supabase
+      .from('productos')
+      .select('sku, stock_actual')
+      .order('id')
+      .range(desde, desde + TAM_PAGINA - 1)
+    if (error) throw new Error(`No se pudo consultar el inventario actual: ${error.message}`)
+    for (const p of data ?? []) mapa.set(String(p.sku).trim(), Number(p.stock_actual) || 0)
+    if (!data || data.length < TAM_PAGINA) return mapa
+  }
+}
 
 export function ImportarInventario({
   open,
@@ -19,14 +44,19 @@ export function ImportarInventario({
 }) {
   const toast = useToast()
   const [archivo, setArchivo] = useState<File | null>(null)
-  const [filas, setFilas] = useState<FilaInventario[] | null>(null)
+  const [filas, setFilas] = useState<FilaLeida[] | null>(null)
+  const [existentes, setExistentes] = useState<StockExistente | null>(null)
+  const [restaurarStock, setRestaurarStock] = useState(false)
   const [leyendo, setLeyendo] = useState(false)
   const [importando, setImportando] = useState(false)
   const [resultado, setResultado] = useState<ResultadoFila[] | null>(null)
 
   function cerrar() {
+    if (importando) return
     setArchivo(null)
     setFilas(null)
+    setExistentes(null)
+    setRestaurarStock(false)
     setResultado(null)
     onClose()
   }
@@ -34,24 +64,31 @@ export function ImportarInventario({
   async function elegirArchivo(f: File) {
     setArchivo(f)
     setResultado(null)
+    setFilas(null)
+    setExistentes(null)
+    setRestaurarStock(false)
     setLeyendo(true)
     try {
-      const leidas = await leerInventarioExcel(f)
+      const [leidas, stock] = await Promise.all([leerInventarioExcel(f), traerStockExistente()])
       setFilas(leidas)
+      setExistentes(stock)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'No se pudo leer el archivo. ¿Es un .xlsx válido?')
       setArchivo(null)
       setFilas(null)
+      setExistentes(null)
     } finally {
       setLeyendo(false)
     }
   }
 
   async function importar() {
-    if (!filas || filas.length === 0) return
+    if (!filas || filas.length === 0 || !existentes || importando) return
     setImportando(true)
     try {
-      const { data, error } = await supabase.rpc('importar_productos', { p_filas: filas })
+      const { data, error } = await supabase.rpc('importar_productos', {
+        p_filas: prepararFilasInventario(filas, existentes, restaurarStock),
+      })
       if (error) throw new Error(error.message)
       const filasResultado = (data ?? []) as ResultadoFila[]
       setResultado(filasResultado)
@@ -71,6 +108,10 @@ export function ImportarInventario({
     }
   }
 
+  const nuevosEnArchivo =
+    filas && existentes ? filas.filter((f) => f.sku && !existentes.has(f.sku.trim())).length : 0
+  const stockDistinto = filas && existentes ? contarStockDistinto(filas, existentes) : 0
+
   const creados = resultado?.filter((r) => r.accion === 'creado').length ?? 0
   const actualizados = resultado?.filter((r) => r.accion === 'actualizado').length ?? 0
   const errores = resultado?.filter((r) => r.accion === 'error') ?? []
@@ -85,7 +126,7 @@ export function ImportarInventario({
         !resultado ? (
           <Button
             className="w-full"
-            disabled={!filas || filas.length === 0 || leyendo}
+            disabled={!filas || filas.length === 0 || !existentes || leyendo}
             loading={importando}
             onClick={importar}
           >
@@ -146,11 +187,45 @@ export function ImportarInventario({
               {leyendo && <span className="text-xs text-ink-400">Leyendo archivo...</span>}
             </label>
 
-            {filas && filas.length > 0 && (
-              <p className="text-center text-sm text-ink-500">
-                Se leyeron <b className="text-ink-800">{filas.length}</b> fila(s). Revisa el
-                nombre del archivo y toca "Importar" para continuar.
-              </p>
+            {filas && filas.length > 0 && existentes && (
+              <div className="space-y-2.5">
+                <p className="text-center text-sm text-ink-500">
+                  Se leyeron <b className="text-ink-800">{filas.length}</b> fila(s):{' '}
+                  <b className="text-ink-800">{nuevosEnArchivo}</b> producto(s) nuevo(s) (se crean con
+                  el stock del archivo) y <b className="text-ink-800">{filas.length - nuevosEnArchivo}</b>{' '}
+                  que ya existen (se actualizan).
+                </p>
+
+                {filas.length - nuevosEnArchivo > 0 && (
+                  <label
+                    className={`flex cursor-pointer items-start gap-2.5 rounded-xl border px-3.5 py-3 text-xs ${
+                      stockDistinto > 0
+                        ? 'border-amber-300 bg-amber-50 text-amber-900'
+                        : 'border-ink-200 bg-ink-50 text-ink-600'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 shrink-0 accent-amber-600"
+                      checked={restaurarStock}
+                      onChange={(e) => setRestaurarStock(e.target.checked)}
+                    />
+                    <span>
+                      <b className="block text-sm">Restaurar stock del archivo</b>
+                      Úsalo al <b>restaurar un respaldo o migrar a otra cuenta</b>: el stock de todos los
+                      productos queda exactamente como en el Excel. Déjalo desmarcado en el uso diario
+                      (si no editaste el stock en el Excel, se conserva el del sistema y no se pierde lo
+                      vendido después de descargarlo).
+                      {stockDistinto > 0 && (
+                        <span className="mt-1.5 block font-semibold">
+                          {stockDistinto} producto(s) tienen en el sistema un stock distinto al del
+                          archivo. Si los ves "agotados" por una importación anterior, marca esta opción.
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                )}
+              </div>
             )}
           </>
         )}
