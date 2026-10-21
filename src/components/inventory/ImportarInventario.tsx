@@ -84,6 +84,22 @@ export function ImportarInventario({
 
   async function importar() {
     if (!filas || filas.length === 0 || !existentes || importando) return
+    // "Restaurar stock" deja el stock EXACTAMENTE como en el archivo: todo lo
+    // vendido despues de descargarlo vuelve al inventario (ej. 50 avenas, se
+    // venden 20, se importa el Excel de antes y vuelven a ser 50). Solo es
+    // para migrar/restaurar un respaldo, asi que se pide confirmacion.
+    if (restaurarStock) {
+      const distintos = contarStockDistinto(filas, existentes)
+      const ok = window.confirm(
+        `Vas a REEMPLAZAR el stock de los productos por el del archivo "${archivo?.name ?? ''}".\n\n` +
+          (distintos > 0
+            ? `${distintos} producto(s) tienen hoy en el sistema un stock distinto al del archivo: ese stock se perderá. `
+            : '') +
+          'Todo lo vendido después de descargar este archivo volverá al inventario.\n\n' +
+          'Hazlo SOLO si estás restaurando un respaldo o migrando a otra cuenta. ¿Continuar?',
+      )
+      if (!ok) return
+    }
     setImportando(true)
     try {
       const { data, error } = await supabase.rpc('importar_productos', {
