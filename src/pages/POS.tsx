@@ -117,7 +117,11 @@ export function POS() {
   // useVentasOffline.
   const aplicarEfectosVentaSincronizada = useCallback(async (_venta: Venta, _pendiente: VentaOffline) => {}, [])
   const avisarSincronizacion = useCallback((mensaje: string) => toast.error(mensaje), [toast])
-  const ventasOffline = useVentasOffline(aplicarEfectosVentaSincronizada, avisarSincronizacion)
+  const ventasOffline = useVentasOffline(aplicarEfectosVentaSincronizada, avisarSincronizacion, usuarioId)
+  // Ventas sin conexion de OTRO cajero en este equipo: se sincronizan cuando
+  // ese cajero inicie sesion aqui (ver useVentasOffline).
+  const pendientesDeOtros = ventasOffline.pendientes.filter((p) => p.cajeroId && p.cajeroId !== usuarioId)
+  const pendientesPropias = ventasOffline.pendientes.filter((p) => !p.cajeroId || p.cajeroId === usuarioId)
 
   const [busqueda, setBusqueda] = useState('')
   const [catSel, setCatSel] = useState<string | null>(null)
@@ -292,6 +296,7 @@ export function POS() {
       descuento: carrito.descuento,
       pagoRecibido,
       cajaId: caja?.id ?? null,
+      cajeroId: usuarioId,
       cajeroNombre: nombreDisplay,
       totales: carrito.totales,
       intentos: 0,
@@ -585,10 +590,14 @@ export function POS() {
             <WifiOff className="size-4 shrink-0" />
             <p className="min-w-0 flex-1 text-sm">
               {!ventasOffline.online && 'Sin conexión — las ventas se guardan en este dispositivo. '}
-              {ventasOffline.pendientes.length > 0 &&
-                `${ventasOffline.pendientes.length} venta${ventasOffline.pendientes.length === 1 ? '' : 's'} por sincronizar.`}
+              {pendientesPropias.length > 0 &&
+                `${pendientesPropias.length} venta${pendientesPropias.length === 1 ? '' : 's'} por sincronizar. `}
+              {pendientesDeOtros.length > 0 &&
+                `${pendientesDeOtros.length} venta${pendientesDeOtros.length === 1 ? '' : 's'} sin internet de ${[
+                  ...new Set(pendientesDeOtros.map((p) => p.cajeroNombre ?? 'otro cajero')),
+                ].join(', ')}: se enviará${pendientesDeOtros.length === 1 ? '' : 'n'} cuando ese cajero inicie sesión en este equipo.`}
             </p>
-            {ventasOffline.online && ventasOffline.pendientes.length > 0 && (
+            {ventasOffline.online && pendientesPropias.length > 0 && (
               <button
                 onClick={() => ventasOffline.sincronizar()}
                 disabled={ventasOffline.sincronizando}
@@ -604,9 +613,9 @@ export function POS() {
               no alcanzaba) — a diferencia de una simple falta de conexion,
               estas no se van a resolver solas reintentando: alguien tiene que
               revisarlas y descartarlas. */}
-          {ventasOffline.pendientes.some((p) => p.ultimoError) && (
+          {pendientesPropias.some((p) => p.ultimoError) && (
             <ul className="mt-2 space-y-1.5">
-              {ventasOffline.pendientes
+              {pendientesPropias
                 .filter((p) => p.ultimoError)
                 .map((p) => (
                   <li
@@ -617,6 +626,12 @@ export function POS() {
                       Venta de {money(p.totales.total)} ({p.itemsCarrito.length} producto
                       {p.itemsCarrito.length === 1 ? '' : 's'}) no se pudo sincronizar:{' '}
                       <b>{p.ultimoError}</b>
+                      {/stock/i.test(p.ultimoError ?? '') && (
+                        <span className="mt-0.5 block">
+                          Si el producto sí está en la tienda, corrige su stock en Inventario y toca
+                          "Reintentar". No la descartes: es una venta ya cobrada.
+                        </span>
+                      )}
                     </span>
                     <button
                       onClick={() => descartarPendienteOffline(p)}

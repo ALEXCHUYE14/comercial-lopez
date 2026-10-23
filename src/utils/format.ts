@@ -56,6 +56,31 @@ export function ymd(d: Date): string {
   return local.toISOString().slice(0, 10)
 }
 
+/** "AAAA-MM-DD" -> Date a las 00:00 HORA LOCAL (no UTC). */
+export function fechaLocal(ymdTexto: string): Date {
+  const [a, m, d] = ymdTexto.split('-').map(Number)
+  return new Date(a, (m || 1) - 1, d || 1)
+}
+
+/**
+ * Rango [inicio del dia `desde`, fin del dia `hasta`] en HORA LOCAL, como ISO
+ * con zona horaria — listo para filtrar columnas timestamptz. Antes se
+ * enviaba "AAAA-MM-DDT00:00:00" sin zona: Supabase lo toma como hora UTC, y en
+ * Peru (UTC-5) las ventas despues de las 7:00 p. m. caian en el dia siguiente
+ * y "desaparecian" del historial de hoy.
+ */
+export function rangoLocalIso(desde: string, hasta: string): { desdeIso: string; hastaIso: string } {
+  const fin = fechaLocal(hasta)
+  fin.setHours(23, 59, 59, 999)
+  return { desdeIso: fechaLocal(desde).toISOString(), hastaIso: fin.toISOString() }
+}
+
+/** Fecha local "AAAA-MM-DD" de un timestamp ISO (para agrupar por dia sin
+ * que las ventas de la noche caigan en el dia siguiente por la hora UTC). */
+export function diaLocal(iso: string): string {
+  return ymd(new Date(iso))
+}
+
 export function inicioDelDia(d = new Date()): Date {
   const x = new Date(d)
   x.setHours(0, 0, 0, 0)

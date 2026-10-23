@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search,
   Printer,
@@ -28,7 +28,10 @@ import {
   ETIQUETA_PAGO,
   ymd,
   cx,
+  rangoLocalIso,
+  diaLocal,
 } from '@/utils/format'
+import { traerTodas } from '@/utils/paginar'
 import { descargarCSV } from '@/utils/csv'
 import { admiteVuelto, lineasPago, metodoParaQr, montoPorMetodo, textoPagos } from '@/utils/pagos'
 import { etiquetaModalidad } from '@/utils/presentaciones'
@@ -94,7 +97,6 @@ export function Ventas() {
   const [cargando, setCargando] = useState(true)
   const [filtrosOpen, setFiltrosOpen] = useState(false)
   const [ticket, setTicket] = useState<Venta | null>(null)
-  const [limiteAlcanzado, setLimiteAlcanzado] = useState(false)
 
   // Lista de cajeros para el filtro (solo admin)
   useEffect(() => {
@@ -106,26 +108,40 @@ export function Ventas() {
       .then(({ data }) => setCajeros(data ?? []))
   }, [esAdmin])
 
+  // Evita que una respuesta lenta de un filtro anterior pise la del actual.
+  const peticionRef = useRef(0)
   const cargar = useCallback(async () => {
+    const id = ++peticionRef.current
     setCargando(true)
-    let query = supabase
-      .from('ventas')
-      .select('*')
-      .gte('creado_en', `${desde}T00:00:00`)
-      .lte('creado_en', `${hasta}T23:59:59.999`)
-      .order('numero', { ascending: false })
-      // 3000 (antes 300): con reportes por quincena/mes un tope bajo
-      // truncaba silenciosamente el resumen y el CSV exportado.
-      .limit(3000)
-
-    if (metodo) query = query.eq('metodo', metodo)
-    if (esAdmin && cajeroId) query = query.eq('cajero_id', cajeroId)
-
-    const { data, error } = await query
-    if (error) toast.error('No se pudo cargar el historial')
-    setVentas(data ?? [])
-    setLimiteAlcanzado((data ?? []).length >= 3000)
-    setCargando(false)
+    // Rango en hora LOCAL de Peru (ver rangoLocalIso): con "T00:00:00" sin
+    // zona horaria, Supabase usaba hora UTC y las ventas de la noche (despues
+    // de las 7:00 p. m.) no aparecian en el dia en que se hicieron.
+    const { desdeIso, hastaIso } = rangoLocalIso(desde, hasta)
+    try {
+      // traerTodas pagina de a 1000 (el maximo que entrega Supabase por
+      // consulta): antes un .limit(3000) se cortaba en 1000 sin aviso.
+      const data = await traerTodas<Venta>((ini, fin) => {
+        let query = supabase
+          .from('ventas')
+          .select('*')
+          .gte('creado_en', desdeIso)
+          .lte('creado_en', hastaIso)
+          .order('creado_en', { ascending: true })
+          .order('id', { ascending: true })
+          .range(ini, fin)
+        if (metodo) query = query.eq('metodo', metodo)
+        if (esAdmin && cajeroId) query = query.eq('cajero_id', cajeroId)
+        return query
+      })
+      if (id !== peticionRef.current) return
+      data.sort((a, b) => b.numero - a.numero || (a.creado_en < b.creado_en ? 1 : -1))
+      setVentas(data)
+    } catch {
+      if (id !== peticionRef.current) return
+      toast.error('No se pudo cargar el historial. Revisa tu conexión e intenta de nuevo.')
+    } finally {
+      if (id === peticionRef.current) setCargando(false)
+    }
   }, [desde, hasta, metodo, cajeroId, esAdmin, toast])
 
   useEffect(() => {
@@ -191,7 +207,7 @@ export function Ventas() {
   const resumenPorDia = useMemo(() => {
     const mapa = new Map<string, { count: number; total: number; anuladas: number }>()
     filtradas.forEach((v) => {
-      const dia = v.creado_en.slice(0, 10)
+      const dia = diaLocal(v.creado_en)
       const prev = mapa.get(dia) ?? { count: 0, total: 0, anuladas: 0 }
       if (v.anulada) {
         prev.anuladas += 1
@@ -279,13 +295,6 @@ export function Ventas() {
           </Button>
         </div>
       </div>
-
-      {limiteAlcanzado && (
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-700">
-          Este periodo tiene más de 3000 ventas — se muestran y exportan solo las primeras 3000.
-          Reduce el rango de fechas para ver el total exacto.
-        </div>
-      )}
 
       {/* ── Métricas del periodo ── */}
       <div className="grid grid-cols-3 gap-3">

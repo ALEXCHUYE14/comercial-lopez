@@ -395,6 +395,22 @@ export interface Database {
         Args: { p_filas: unknown }
         Returns: { fila: number; sku: string; accion: string; mensaje: string | null }[]
       }
+      registrar_compra: {
+        Args: {
+          p_numero: string | null
+          p_proveedor_id: string | null
+          p_fecha_compra: string
+          p_estado: EstadoCompra
+          p_notas: string | null
+          p_items: unknown
+          p_actualizar_costo?: boolean
+        }
+        Returns: Compra
+      }
+      fijar_stock: {
+        Args: { p_producto_id: string; p_stock: number; p_motivo?: string | null }
+        Returns: Producto
+      }
       registrar_merma: {
         Args: {
           p_producto_id: string | null

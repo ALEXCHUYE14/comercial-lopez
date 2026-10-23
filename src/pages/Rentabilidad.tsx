@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Download, TrendingUp, AlertTriangle, ChevronDown } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Card, Spinner, Button } from '@/components/ui/Button'
-import { money, fechaCorta, ymd, cx } from '@/utils/format'
+import { money, fechaCorta, ymd, cx, rangoLocalIso } from '@/utils/format'
+import { traerTodas } from '@/utils/paginar'
+import { useToast } from '@/components/ui/Toast'
 import { descargarCSV } from '@/utils/csv'
 
 interface FilaRentabilidad {
@@ -27,6 +29,7 @@ export function Rentabilidad() {
   })
   const [hasta, setHasta] = useState(hoy)
   const [cargando, setCargando] = useState(true)
+  const toast = useToast()
   const [filas, setFilas] = useState<FilaRentabilidad[]>([])
   const [orden, setOrden] = useState<Orden>('margen')
 
@@ -35,27 +38,41 @@ export function Rentabilidad() {
     try {
       // Costo actual de cada producto (incluye inactivos: un producto
       // descontinuado igual debe poder aparecer en reportes de periodos pasados).
-      const { data: productos } = await supabase
-        .from('productos')
-        .select('id, precio_compra')
-      const costoPorProducto = new Map<string, number>(
-        (productos ?? []).map((p) => [p.id, Number(p.precio_compra)]),
+      // traerTodas: Supabase entrega maximo 1000 filas por consulta; con mas
+      // productos (o mas lineas vendidas en el periodo) el reporte quedaba
+      // incompleto sin ningun aviso.
+      const productos = await traerTodas<{ id: string; precio_compra: number }>((ini, fin) =>
+        supabase.from('productos').select('id, precio_compra').order('id').range(ini, fin),
       )
+      const costoPorProducto = new Map<string, number>(
+        productos.map((p) => [p.id, Number(p.precio_compra)]),
+      )
+      // Rango en hora local de Peru (ver rangoLocalIso en utils/format.ts).
+      const { desdeIso, hastaIso } = rangoLocalIso(desde, hasta)
 
       // Filtra por fecha/anulada a traves del join embebido (evita pasar miles
       // de IDs de ventas en un solo .in(), que rompe con periodos largos).
-      const { data, error } = await supabase
-        .from('detalle_ventas')
-        .select('producto_id, producto_nombre, cantidad, unidades, subtotal, ventas!inner(creado_en,anulada)')
-        .eq('ventas.anulada', false)
-        .gte('ventas.creado_en', `${desde}T00:00:00`)
-        .lte('ventas.creado_en', `${hasta}T23:59:59.999`)
-        .limit(20000)
-
-      if (error) throw error
+      type Linea = {
+        id: string
+        producto_id: string | null
+        producto_nombre: string
+        cantidad: number
+        unidades: number | null
+        subtotal: number
+      }
+      const data = await traerTodas<Linea>((ini, fin) =>
+        supabase
+          .from('detalle_ventas')
+          .select('id, producto_id, producto_nombre, cantidad, unidades, subtotal, ventas!inner(creado_en,anulada)')
+          .eq('ventas.anulada', false)
+          .gte('ventas.creado_en', desdeIso)
+          .lte('ventas.creado_en', hastaIso)
+          .order('id')
+          .range(ini, fin) as unknown as PromiseLike<{ data: Linea[] | null; error: { message: string } | null }>,
+      )
 
       const mapa = new Map<string, FilaRentabilidad>()
-      ;(data ?? []).forEach((d) => {
+      data.forEach((d) => {
         const key = d.producto_id ?? `sin-id:${d.producto_nombre}`
         const costoUnit = d.producto_id ? costoPorProducto.get(d.producto_id) : undefined
         const unidadesReales = Number(d.unidades ?? d.cantidad)
@@ -83,10 +100,12 @@ export function Rentabilidad() {
         margenPct: f.totalVendido > 0 ? ((f.totalVendido - f.costoTotal) / f.totalVendido) * 100 : 0,
       }))
       setFilas(resultado)
+    } catch (e) {
+      toast.error(e instanceof Error ? `No se pudo cargar el reporte: ${e.message}` : 'No se pudo cargar el reporte')
     } finally {
       setCargando(false)
     }
-  }, [desde, hasta])
+  }, [desde, hasta, toast])
 
   useEffect(() => {
     cargar()

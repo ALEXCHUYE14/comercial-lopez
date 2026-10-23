@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { funcionNoExiste } from '@/hooks/useMermas'
 import type { Compra, DetalleCompra, EstadoCompra } from '@/types/database'
 
 export interface ItemCompra {
@@ -32,48 +33,49 @@ export function useCompras() {
     cabecera: {
       numero: string | null
       proveedor_id: string | null
-      proveedor_nombre: string | null
       fecha_compra: string
       estado: EstadoCompra
       notas: string | null
-      total: number
     },
     items: ItemCompra[],
+    actualizarCosto = true,
   ): Promise<Compra> {
-    const { data: c, error: eC } = await supabase
-      .from('compras')
-      .insert(cabecera)
-      .select('*, proveedores(*)')
-      .single()
-    if (eC) throw eC
-
-    if (items.length > 0) {
-      const detalles: Omit<DetalleCompra, 'id'>[] = items.map((i) => ({
-        compra_id: c.id,
+    // registrar_compra (ver supabase/correccion_compras_stock.sql) guarda la
+    // cabecera, el detalle, SUMA EL STOCK y actualiza el costo en UNA sola
+    // transaccion. Antes se hacia en pasos sueltos desde el navegador: el
+    // detalle era rechazado por la base de datos (detalle_compras no tenia
+    // permiso de escritura) y el stock de lo comprado nunca se sumaba.
+    const { data, error } = await supabase.rpc('registrar_compra', {
+      p_numero: cabecera.numero,
+      p_proveedor_id: cabecera.proveedor_id,
+      p_fecha_compra: cabecera.fecha_compra,
+      p_estado: cabecera.estado,
+      p_notas: cabecera.notas,
+      p_items: items.map((i) => ({
         producto_id: i.producto_id,
         producto_nombre: i.producto_nombre,
         cantidad: i.cantidad,
         precio_unitario: i.precio_unitario,
-        subtotal: i.cantidad * i.precio_unitario,
-      }))
-      const { error: eD } = await supabase.from('detalle_compras').insert(detalles)
-      if (eD) throw eD
-
-      // Ingresar stock por cada item con producto vinculado
-      for (const i of items) {
-        if (i.producto_id) {
-          await supabase.rpc('ajustar_stock', {
-            p_producto_id: i.producto_id,
-            p_cantidad: i.cantidad,
-            p_tipo: 'entrada',
-            p_motivo: `Compra ${cabecera.numero ? '#' + cabecera.numero : c.id.slice(0, 8)}`,
-          })
-        }
-      }
+      })),
+      p_actualizar_costo: actualizarCosto,
+    })
+    if (error) {
+      throw new Error(
+        funcionNoExiste(error)
+          ? 'Falta actualizar la base de datos: ejecuta el archivo supabase/correccion_compras_stock.sql en el SQL Editor de Supabase. La compra NO se registró.'
+          : error.message,
+      )
     }
-
-    setCompras((prev) => [c, ...prev])
-    return c
+    const creada = data as Compra
+    // Se vuelve a leer con el proveedor embebido, como el resto del listado.
+    const { data: completa } = await supabase
+      .from('compras')
+      .select('*, proveedores(*)')
+      .eq('id', creada.id)
+      .single()
+    const compra = (completa ?? creada) as Compra
+    setCompras((prev) => [compra, ...prev.filter((x) => x.id !== compra.id)])
+    return compra
   }
 
   async function cambiarEstado(id: string, estado: EstadoCompra): Promise<void> {

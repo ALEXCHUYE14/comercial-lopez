@@ -27,6 +27,8 @@ function precioItem(item: ItemCarrito): number {
 export function useVentasOffline(
   aplicarEfectosVenta: (venta: Venta, pendiente: VentaOffline) => Promise<void>,
   onAdvertencia?: (mensaje: string) => void,
+  /** Usuario con la sesion abierta: solo se sincronizan SUS ventas. */
+  usuarioActualId?: string | null,
 ) {
   const [pendientes, setPendientes] = useState<VentaOffline[]>([])
   const [online, setOnline] = useState(navigator.onLine)
@@ -49,6 +51,10 @@ export function useVentasOffline(
     try {
       const lista = await listarVentasOffline()
       for (const pendiente of lista) {
+        // Venta de OTRO cajero de este equipo: se deja en cola hasta que ese
+        // cajero inicie sesion (si se enviara ahora, quedaria a nombre del
+        // usuario conectado).
+        if (pendiente.cajeroId && pendiente.cajeroId !== usuarioActualId) continue
         const items = pendiente.itemsCarrito.map((i) => ({
           producto_id: i.producto.id,
           cantidad: i.cantidad,
@@ -113,7 +119,7 @@ export function useVentasOffline(
       setSincronizando(false)
       await recargar()
     }
-  }, [aplicarEfectosVenta, onAdvertencia, recargar])
+  }, [aplicarEfectosVenta, onAdvertencia, recargar, usuarioActualId])
 
   const encolar = useCallback(
     async (venta: VentaOffline) => {
@@ -167,6 +173,12 @@ export function useVentasOffline(
   useEffect(() => {
     sincronizarRef.current = sincronizar
   }, [sincronizar])
+
+  // Al iniciar sesion (o cambiar de usuario) en este equipo, se envian de
+  // inmediato las ventas pendientes de ese cajero.
+  useEffect(() => {
+    if (usuarioActualId && navigator.onLine) sincronizarRef.current()
+  }, [usuarioActualId])
 
   useEffect(() => {
     if (pendientes.length === 0) return

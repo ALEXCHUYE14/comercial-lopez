@@ -32,6 +32,13 @@ export interface VentaOffline {
   descuento: number
   pagoRecibido: number
   cajaId: string | null
+  /** Cajero que hizo la venta. Al sincronizar, el servidor registra la venta
+   * a nombre del usuario CONECTADO: sin este dato, una venta de un cajero
+   * hecha sin internet quedaba a nombre de otro si ese otro iniciaba sesion
+   * en el equipo antes de que se sincronizara (y "desaparecia" del historial
+   * de quien la hizo). Opcional: las ventas encoladas antes de este cambio no
+   * lo tienen y se sincronizan como antes. */
+  cajeroId?: string | null
   cajeroNombre: string | null
   totales: VentaOfflineTotales
   intentos: number

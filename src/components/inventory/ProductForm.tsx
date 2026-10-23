@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import { CameraScanner } from '@/components/pos/CameraScanner'
 import { useProductoImagen } from '@/hooks/useProductoImagen'
 import { supabase } from '@/lib/supabase'
-import { cx, cantidad } from '@/utils/format'
+import { cx, cantidad, money } from '@/utils/format'
 import { beepExito, desbloquearAudioScanner } from '@/utils/beep'
 import {
   CATALOGO_PRESENTACIONES,
@@ -126,6 +126,13 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
   const [tipoVenta, setTipoVenta] = useState<TipoVenta>('unidad')
   const [pres, setPres] = useState<EstadoPresentaciones>(presInicial)
   const [personalizadas, setPersonalizadas] = useState<FilaPersonalizada[]>([])
+  // Presentaciones del catalogo fijo YA guardadas en el producto pero que el
+  // formulario no ofrece para su tipo/unidad actual (ej. "Media caja" en un
+  // producto sin caja, "Paquete" con unidad base paquete, o venidas de un
+  // Excel importado). Antes se BORRABAN en silencio al editar cualquier dato
+  // del producto (ej. solo el precio); ahora se conservan tal cual, salvo que
+  // se quiten a proposito.
+  const [conservadas, setConservadas] = useState<Presentacion[]>([])
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [arrastrando, setArrastrando] = useState(false)
@@ -154,6 +161,12 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       setTipoVenta(producto.tipo_venta ?? 'unidad')
       setPres(presDesdeProducto(producto))
       setPersonalizadas(personalizadasDesdeProducto(producto))
+      const ofrecidas = clavesDisponibles(producto.tipo_venta ?? 'unidad', producto.unidad, producto.tiene_caja)
+      setConservadas(
+        presentacionesDe(producto).filter(
+          (x) => esClaveConocida(x.clave) && !(ofrecidas as string[]).includes(x.clave),
+        ),
+      )
     } else {
       setF(skuInicial ? { ...vacio, sku: skuInicial } : vacio)
       setTieneCaja(false)
@@ -161,6 +174,7 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
       setTipoVenta('unidad')
       setPres(presInicial())
       setPersonalizadas([])
+      setConservadas([])
       // Si llega un SKU precargado (viene de un escaneo sin coincidencia),
       // el usuario ya no necesita tocar ese campo: pasa el foco directo al
       // nombre, igual que hace onSkuDetectado tras escanear dentro del form.
@@ -367,6 +381,15 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
     // no vacío, sin choque de nombre con otra opción ya ofrecida (evita dos
     // opciones idénticas confundiendo al cajero en el punto de venta), y la
     // misma validación de equivalencia/precio que las fijas de arriba.
+    // Conservadas (ver arriba): se mantienen sin cambios, salvo las que con la
+    // configuracion actual ya se ofrecen como interruptor (esas las maneja el
+    // bucle anterior, para no duplicarlas).
+    const ofrecidasAhora = clavesDisponibles(tipoVenta, f.unidad, tieneCaja) as string[]
+    for (const c of conservadas) {
+      if (ofrecidasAhora.includes(c.clave) || presentaciones.some((p) => p.clave === c.clave)) continue
+      presentaciones.push({ clave: c.clave, nombre: c.nombre, factor: Number(c.factor), precio: Number(c.precio) })
+    }
+
     const nombresUsados = new Set<string>([(esGranel ? `por ${f.unidad}` : 'unidad').toLowerCase()])
     if (!esGranel && tieneCaja) nombresUsados.add('caja')
     if (esGranel && tieneSaco) nombresUsados.add('saco')
@@ -445,8 +468,20 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
     let productoId: string
     try {
       if (producto) {
-        const { error } = await supabase.from('productos').update(payload).eq('id', producto.id)
+        // .select('id'): un UPDATE bloqueado por permisos (RLS) NO devuelve
+        // error en Supabase, solo no cambia ninguna fila — sin esto se
+        // mostraba "Producto actualizado" aunque los precios no se guardaran.
+        const { data: filas, error } = await supabase
+          .from('productos')
+          .update(payload)
+          .eq('id', producto.id)
+          .select('id')
         if (error) throw error
+        if (!filas || filas.length === 0) {
+          throw new Error(
+            'No se guardaron los cambios: tu usuario no tiene permiso de administrador activo, o el producto ya no existe.',
+          )
+        }
         productoId = producto.id
       } else {
         const { data, error } = await supabase
@@ -908,6 +943,47 @@ export function ProductForm({ open, onClose, producto, categorias, onGuardado, s
             })}
           </div>
         </div>
+        )}
+
+        {conservadas.length > 0 && (
+          <div className="rounded-xl border border-ink-100 p-3">
+            <p className="text-sm font-semibold text-ink-800">Otras presentaciones guardadas</p>
+            <p className="text-xs text-ink-400">
+              Este producto ya las tiene configuradas (se siguen vendiendo en el punto de venta). Se
+              conservan al guardar; quítalas solo si ya no se usan.
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {conservadas.map((c) => (
+                <li
+                  key={c.clave}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-ink-100 px-3 py-2 text-sm"
+                >
+                  <span className="min-w-0">
+                    <b className="text-ink-800">{c.nombre}</b>
+                    <span className="text-ink-400">
+                      {' '}
+                      · {cantidad(Number(c.factor))} {esGranel ? f.unidad : 'u.'} · {money(Number(c.precio))}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConservadas((prev) => prev.filter((x) => x.clave !== c.clave))
+                      // Tambien se apaga su interruptor, por si al cambiar el tipo
+                      // de venta/unidad esa presentacion volviera a ofrecerse.
+                      if (esClaveConocida(c.clave)) {
+                        const k = c.clave as ClavePresentacion
+                        setPres((prev) => ({ ...prev, [k]: { ...prev[k], on: false } }))
+                      }
+                    }}
+                    className="shrink-0 text-xs font-semibold text-red-600 hover:underline"
+                  >
+                    Quitar
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {/* Presentaciones personalizadas: para jerarquías de empaque propias

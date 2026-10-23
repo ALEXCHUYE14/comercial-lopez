@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { supabase } from '@/lib/supabase'
 import { cx } from '@/utils/format'
+import { funcionNoExiste } from '@/hooks/useMermas'
 import type { Producto, TipoMovimiento } from '@/types/database'
 
 interface Props {
@@ -34,6 +35,16 @@ export function StockAdjust({ open, onClose, producto, onListo }: Props) {
   const nuevoStock =
     tipo === 'ajuste' ? cantNum : producto.stock_actual + signo * cantNum
 
+  async function ajustar(delta: number, tipoMov: TipoMovimiento) {
+    const { error } = await supabase.rpc('ajustar_stock', {
+      p_producto_id: producto!.id,
+      p_cantidad: delta,
+      p_tipo: tipoMov,
+      p_motivo: motivo || null,
+    })
+    if (error) throw new Error(error.message)
+  }
+
   async function aplicar() {
     // "Ajuste" fija el stock real tras un conteo fisico: 0 es un valor
     // legitimo (ej. el conteo revela que no queda nada). Solo se rechaza si
@@ -47,19 +58,27 @@ export function StockAdjust({ open, onClose, producto, onListo }: Props) {
       toast.error('Ingresa una cantidad valida.')
       return
     }
+    if (guardando) return
     setGuardando(true)
-    // Para "ajuste" calculamos el delta hacia el valor objetivo
-    const delta =
-      tipo === 'ajuste' ? cantNum - producto!.stock_actual : signo * cantNum
-    const tipoMov: TipoMovimiento = tipo === 'ajuste' ? 'ajuste' : tipo
     try {
-      const { error } = await supabase.rpc('ajustar_stock', {
-        p_producto_id: producto!.id,
-        p_cantidad: delta,
-        p_tipo: tipoMov,
-        p_motivo: motivo || null,
-      })
-      if (error) throw error
+      if (tipo === 'ajuste') {
+        // Conteo fisico: fijar_stock calcula la diferencia EN EL SERVIDOR con
+        // el stock real del momento. Antes se calculaba aqui con el stock que
+        // mostraba la pantalla: si entre medio se vendia algo, el stock final
+        // no quedaba igual a lo contado.
+        const { error } = await supabase.rpc('fijar_stock', {
+          p_producto_id: producto!.id,
+          p_stock: cantNum,
+          p_motivo: motivo || null,
+        })
+        if (error && !funcionNoExiste(error)) throw new Error(error.message)
+        if (error) {
+          // Respaldo si aun no se ejecuto supabase/correccion_compras_stock.sql.
+          await ajustar(cantNum - producto!.stock_actual, 'ajuste')
+        }
+      } else {
+        await ajustar(signo * cantNum, tipo)
+      }
       toast.exito('Stock actualizado')
       setCantidad('')
       setMotivo('')

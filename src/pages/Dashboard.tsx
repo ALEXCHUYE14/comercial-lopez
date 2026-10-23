@@ -34,6 +34,7 @@ import { getNegocio } from '@/config/negocio'
 import { Card, Badge } from '@/components/ui/Button'
 import { money, numero, horaCorta, fechaHora, cx, ETIQUETA_PAGO } from '@/utils/format'
 import { montoPorMetodo, pagosDe } from '@/utils/pagos'
+import { traerTodas } from '@/utils/paginar'
 import type { DetalleVenta, Producto } from '@/types/database'
 
 // Arma el mensaje de WhatsApp con el resumen de productos por vencer y abre
@@ -95,13 +96,19 @@ function inicioSemanaLunes(d: Date): Date {
 }
 
 async function totalesEnRango(desde: Date, hasta: Date): Promise<TotalesPeriodo> {
-  const { data } = await supabase
-    .from('ventas')
-    .select('total')
-    .eq('anulada', false)
-    .gte('creado_en', desde.toISOString())
-    .lte('creado_en', hasta.toISOString())
-  const filas = data ?? []
+  // traerTodas: con mas de 1000 ventas en el periodo (semana/mes) Supabase
+  // cortaba la respuesta en 1000 sin aviso y el total salia menor al real.
+  const filas = await traerTodas<{ id: string; total: number }>((ini, fin) =>
+    supabase
+      .from('ventas')
+      .select('id, total')
+      .eq('anulada', false)
+      .gte('creado_en', desde.toISOString())
+      .lte('creado_en', hasta.toISOString())
+      .order('creado_en')
+      .order('id')
+      .range(ini, fin),
+  ).catch(() => [] as { id: string; total: number }[])
   return {
     total: filas.reduce((s, v) => s + Number(v.total), 0),
     count: filas.length,
@@ -235,19 +242,40 @@ export function Dashboard() {
 
   // Top productos del dia (agrega desde detalle_ventas de las ventas de hoy)
   useEffect(() => {
+    // Las ventas cambian con cada venta nueva: una carga anterior que termine
+    // tarde no debe pisar el resultado de la mas reciente.
+    let vigente = true
     async function cargarTop() {
       const ids = ventas.map((v) => v.id)
       if (ids.length === 0) {
         setTopProductos([])
         return
       }
-      const { data } = await supabase
-        .from('detalle_ventas')
-        .select('producto_nombre, cantidad, venta_id')
-        .in('venta_id', ids)
+      // De a 150 ventas por consulta (una lista enorme de IDs no entra en la
+      // URL) y paginando cada tanda: con muchas ventas en el dia el detalle
+      // superaba las 1000 filas que Supabase entrega por consulta.
+      const detalle: DetalleVenta[] = []
+      try {
+        for (let i = 0; i < ids.length; i += 150) {
+          const tanda = ids.slice(i, i + 150)
+          detalle.push(
+            ...(await traerTodas<DetalleVenta>((ini, fin) =>
+              supabase
+                .from('detalle_ventas')
+                .select('id, producto_nombre, cantidad, venta_id')
+                .in('venta_id', tanda)
+                .order('id')
+                .range(ini, fin) as unknown as PromiseLike<{ data: DetalleVenta[] | null; error: { message: string } | null }>,
+            )),
+          )
+        }
+      } catch {
+        return // sin conexion: se conserva el top anterior
+      }
+      if (!vigente) return
       const mapa = new Map<string, number>()
-      ;(data as DetalleVenta[] | null)?.forEach((d) => {
-        mapa.set(d.producto_nombre, (mapa.get(d.producto_nombre) ?? 0) + d.cantidad)
+      detalle.forEach((d) => {
+        mapa.set(d.producto_nombre, (mapa.get(d.producto_nombre) ?? 0) + Number(d.cantidad))
       })
       setTopProductos(
         [...mapa.entries()]
@@ -257,6 +285,9 @@ export function Dashboard() {
       )
     }
     cargarTop()
+    return () => {
+      vigente = false
+    }
   }, [ventas])
 
   const kpis = useMemo(() => {

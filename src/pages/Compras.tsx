@@ -28,6 +28,7 @@ export function Compras() {
   const [detalleOpen, setDetalleOpen] = useState(false)
   const [compraVer, setCompraVer] = useState<Compra | null>(null)
   const [detalles, setDetalles] = useState<DetalleCompra[]>([])
+  const [cargandoDetalles, setCargandoDetalles] = useState(false)
   const [filtroEstado, setFiltroEstado] = useState<EstadoCompra | 'todos'>('todos')
   const [guardando, setGuardando] = useState(false)
 
@@ -41,6 +42,9 @@ export function Compras() {
   })
   const [items, setItems] = useState<ItemCompra[]>([])
   const [busqProd, setBusqProd] = useState('')
+  // Actualiza el costo (precio de compra) de cada producto con el precio de
+  // esta compra — es lo que usan Rentabilidad y el valor del inventario.
+  const [actualizarCosto, setActualizarCosto] = useState(true)
 
   const filtradas = useMemo(() => {
     if (filtroEstado === 'todos') return compras
@@ -83,6 +87,13 @@ export function Compras() {
     setBusqProd('')
   }
 
+  function unidadDe(productoId: string | null): string | null {
+    if (!productoId) return null
+    const p = productos.find((x) => x.id === productoId)
+    if (!p) return null
+    return p.tipo_venta === 'granel' ? `Cantidad en ${p.unidad}` : 'Cantidad en unidades'
+  }
+
   function agregarItemLibre() {
     if (!busqProd.trim()) return
     setItems((prev) => [
@@ -110,29 +121,43 @@ export function Compras() {
     setF({ numero: '', proveedor_id: '', fecha_compra: ymd(new Date()), estado: 'pendiente', notas: '' })
     setItems([])
     setBusqProd('')
+    setActualizarCosto(true)
   }
 
   async function guardar() {
+    if (guardando) return
     if (items.length === 0) {
       toast.error('Agrega al menos un producto a la compra.')
       return
     }
+    const sinCantidad = items.find((i) => !(i.cantidad > 0))
+    if (sinCantidad) {
+      toast.error(`Indica la cantidad de "${sinCantidad.producto_nombre}" (mayor a 0).`)
+      return
+    }
+    const precioInvalido = items.find((i) => !(i.precio_unitario >= 0))
+    if (precioInvalido) {
+      toast.error(`El precio de "${precioInvalido.producto_nombre}" no es válido.`)
+      return
+    }
+    if (!f.fecha_compra) {
+      toast.error('Indica la fecha de compra.')
+      return
+    }
     setGuardando(true)
     try {
-      const prov = proveedores.find((p) => p.id === f.proveedor_id)
       await crear(
         {
           numero: f.numero.trim() || null,
           proveedor_id: f.proveedor_id || null,
-          proveedor_nombre: prov?.nombre ?? null,
           fecha_compra: f.fecha_compra,
           estado: f.estado,
           notas: f.notas.trim() || null,
-          total: parseFloat(totalCalculado.toFixed(2)),
         },
         items,
+        actualizarCosto,
       )
-      toast.exito('Compra registrada y stock actualizado')
+      toast.exito('Compra registrada: stock sumado al inventario')
       setFormOpen(false)
       resetForm()
     } catch (e) {
@@ -146,8 +171,14 @@ export function Compras() {
     setCompraVer(c)
     setDetalles([])
     setDetalleOpen(true)
-    const d = await obtenerDetalles(c.id)
-    setDetalles(d)
+    setCargandoDetalles(true)
+    try {
+      setDetalles(await obtenerDetalles(c.id))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'No se pudieron cargar los productos de la compra')
+    } finally {
+      setCargandoDetalles(false)
+    }
   }
 
   async function toggleEstado(c: Compra) {
@@ -423,8 +454,16 @@ export function Compras() {
                     key={idx}
                     className="grid grid-cols-[1fr_80px_100px_32px] items-center gap-2 px-3 py-2"
                   >
-                    <span className="truncate text-sm font-semibold text-ink-800">
-                      {item.producto_nombre}
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-ink-800">
+                        {item.producto_nombre}
+                      </span>
+                      {/* La cantidad se suma al stock en la unidad base del
+                          producto (unidades, kg...): se muestra para no
+                          confundir, ej., 2 cajas con 2 unidades. */}
+                      <span className="block text-[0.7rem] text-ink-400">
+                        {unidadDe(item.producto_id) ?? 'Sin vincular: no suma stock'}
+                      </span>
                     </span>
                     <input
                       type="number"
@@ -452,6 +491,22 @@ export function Compras() {
                 ))}
               </ul>
             </div>
+          )}
+
+          {items.some((i) => i.producto_id) && (
+            <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-ink-200 bg-ink-50 px-3.5 py-3 text-xs text-ink-600">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4 shrink-0"
+                checked={actualizarCosto}
+                onChange={(e) => setActualizarCosto(e.target.checked)}
+              />
+              <span>
+                <b className="block text-sm text-ink-800">Actualizar el costo de los productos</b>
+                El precio unitario de esta compra queda como nuevo <b>precio de compra</b> de cada
+                producto (no cambia el precio de venta).
+              </span>
+            </label>
           )}
         </div>
       </Sheet>
@@ -482,8 +537,18 @@ export function Compras() {
             </div>
             <div>
               <p className="label mb-2 block">Productos</p>
-              {detalles.length === 0 ? (
+              {cargandoDetalles ? (
                 <p className="py-4 text-center text-sm text-ink-400">Cargando detalles...</p>
+              ) : detalles.length === 0 ? (
+                // Compras registradas antes de la correccion de registrar_compra:
+                // la cabecera se guardo pero los productos fueron rechazados por
+                // la base de datos, asi que su stock NUNCA se sumo.
+                <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3 text-xs text-amber-900">
+                  <b className="block text-sm">Esta compra no tiene productos registrados.</b>
+                  Por un error del sistema (ya corregido), la mercadería de esta compra
+                  <b> no se sumó al stock</b>. Revisa los productos de esta factura y súmalos con
+                  <b> Inventario → Movimiento → Entrada</b> (no la registres de nuevo: se duplicaría la deuda con el proveedor).
+                </div>
               ) : (
                 <ul className="divide-y divide-ink-100 rounded-xl border border-ink-200">
                   {detalles.map((d) => (

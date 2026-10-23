@@ -447,7 +447,9 @@ export function Inventario() {
       <StockAdjust
         open={!!ajuste}
         onClose={() => setAjuste(null)}
-        producto={ajuste}
+        // Version VIGENTE del producto (llega por realtime), no la copia de
+        // cuando se abrio: el "Stock actual" mostrado debe ser el real.
+        producto={ajuste ? (productos.find((p) => p.id === ajuste.id) ?? ajuste) : null}
         onListo={recargar}
       />
       <ScanEntrada

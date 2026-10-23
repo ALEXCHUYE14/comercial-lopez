@@ -16,6 +16,7 @@ import { Card, Badge, Button, Spinner } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, ymd, cx } from '@/utils/format'
 import { descargarCSV } from '@/utils/csv'
+import { traerTodas } from '@/utils/paginar'
 import type { CajaRegistro, ResultadoArqueo, Venta } from '@/types/database'
 
 const ETIQUETA_RESULTADO: Record<ResultadoArqueo, string> = {
@@ -80,24 +81,41 @@ export function AuditoriaCajeros() {
       setCargando(true)
       const desdeIso = new Date(`${desde}T00:00:00`).toISOString()
       const hastaIso = new Date(`${hasta}T23:59:59.999`).toISOString()
-      const [{ data: ventasData }, { data: cajasData }] = await Promise.all([
-        supabase
-          .from('ventas')
-          .select('*')
-          .eq('anulada', false)
-          .gte('creado_en', desdeIso)
-          .lte('creado_en', hastaIso),
-        supabase
-          .from('cajas')
-          .select('*')
-          .eq('estado', 'cerrada')
-          .gte('cerrada_en', desdeIso)
-          .lte('cerrada_en', hastaIso),
-      ])
-      if (!activo) return
-      setVentas(ventasData ?? [])
-      setCajasCerradas(cajasData ?? [])
-      setCargando(false)
+      // Paginado: Supabase entrega maximo 1000 filas por consulta; con mas
+      // ventas en el periodo el ranking y los totales salian incompletos.
+      try {
+        const [ventasData, cajasData] = await Promise.all([
+          traerTodas<Venta>((ini, fin) =>
+            supabase
+              .from('ventas')
+              .select('*')
+              .eq('anulada', false)
+              .gte('creado_en', desdeIso)
+              .lte('creado_en', hastaIso)
+              .order('creado_en')
+              .order('id')
+              .range(ini, fin),
+          ),
+          traerTodas<CajaRegistro>((ini, fin) =>
+            supabase
+              .from('cajas')
+              .select('*')
+              .eq('estado', 'cerrada')
+              .gte('cerrada_en', desdeIso)
+              .lte('cerrada_en', hastaIso)
+              .order('cerrada_en')
+              .order('id')
+              .range(ini, fin),
+          ),
+        ])
+        if (!activo) return
+        setVentas(ventasData)
+        setCajasCerradas(cajasData)
+      } catch {
+        // sin conexion: se conserva lo que ya se mostraba
+      } finally {
+        if (activo) setCargando(false)
+      }
     }
     cargar()
     return () => {

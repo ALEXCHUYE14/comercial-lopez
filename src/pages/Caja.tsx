@@ -29,7 +29,7 @@ import { getNegocio, textoDocumento } from '@/config/negocio'
 import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { useToast } from '@/components/ui/Toast'
-import { money, fechaHora, horaCorta, ymd, cx } from '@/utils/format'
+import { money, fechaHora, horaCorta, ymd, cx, diaLocal } from '@/utils/format'
 import { mensajeError } from '@/utils/errors'
 import { mensajeVinculacion, type ResumenCierre } from '@/hooks/useCaja'
 import {
@@ -203,7 +203,8 @@ export function Caja() {
   const historialFiltrado = useMemo(() => {
     if (!histDesde && !histHasta) return historial
     return historial.filter((h: CajaRegistro) => {
-      const fecha = h.abierta_en.slice(0, 10)
+      // Dia LOCAL (no UTC): una caja abierta de noche quedaba en el dia siguiente.
+      const fecha = diaLocal(h.abierta_en)
       if (histDesde && fecha < histDesde) return false
       if (histHasta && fecha > histHasta) return false
       return true
