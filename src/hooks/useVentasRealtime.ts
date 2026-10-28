@@ -4,7 +4,13 @@ import { inicioDelDia, finDelDia } from '@/utils/format'
 import { traerTodas } from '@/utils/paginar'
 import type { Venta } from '@/types/database'
 
-const MIN_MS_ENTRE_RECARGAS = 15_000
+// Plan Free de Supabase (trafico y mensajes limitados): mientras el tiempo
+// real funcione, los cambios de ventas llegan solos y recargar la lista
+// completa es trafico desperdiciado. Solo se recarga todo cuando la vista PUDO
+// quedar desactualizada: el canal se cayo (internet intermitente, equipo
+// suspendido) o se recupero la conexion. Como red de seguridad, al volver a la
+// pantalla se recarga tambien si la ultima carga completa tiene mas de 30 min.
+const RECARGA_RESPALDO_MS = 30 * 60_000
 
 /**
  * Suscripcion en tiempo real a las ventas del dia.
@@ -15,6 +21,8 @@ export function useVentasRealtime() {
   const [cargando, setCargando] = useState(true)
   const peticionRef = useRef(0)
   const ultimaRecargaRef = useRef(0)
+  // true = pudieron perderse cambios en tiempo real desde la ultima carga.
+  const desfaseRef = useRef(false)
 
   const cargar = useCallback(async () => {
     const id = ++peticionRef.current
@@ -33,6 +41,7 @@ export function useVentasRealtime() {
           .range(ini, fin),
       )
       if (id !== peticionRef.current) return
+      desfaseRef.current = false
       setVentas(data.reverse())
     } catch {
       // Sin conexion: se conserva lo que ya se mostraba; se reintenta al
@@ -78,23 +87,29 @@ export function useVentasRealtime() {
         // Las ventas hechas mientras el canal estuvo caido no se reenvian:
         // al reconectar se recarga todo para no "perderlas" de la vista.
         if (estado === 'SUBSCRIBED') {
-          if (suscritoAntes) cargar()
+          if (suscritoAntes || desfaseRef.current) cargar()
           suscritoAntes = true
+        } else if (estado === 'CHANNEL_ERROR' || estado === 'TIMED_OUT' || estado === 'CLOSED') {
+          desfaseRef.current = true
         }
       })
 
     function recargarSiHaceFalta() {
       if (document.visibilityState !== 'visible') return
-      if (Date.now() - ultimaRecargaRef.current < MIN_MS_ENTRE_RECARGAS) return
-      cargar()
+      const vieja = Date.now() - ultimaRecargaRef.current > RECARGA_RESPALDO_MS
+      if (desfaseRef.current || vieja) cargar()
+    }
+    function alRecuperarInternet() {
+      desfaseRef.current = true
+      recargarSiHaceFalta()
     }
     document.addEventListener('visibilitychange', recargarSiHaceFalta)
-    window.addEventListener('online', recargarSiHaceFalta)
+    window.addEventListener('online', alRecuperarInternet)
     window.addEventListener('focus', recargarSiHaceFalta)
 
     return () => {
       document.removeEventListener('visibilitychange', recargarSiHaceFalta)
-      window.removeEventListener('online', recargarSiHaceFalta)
+      window.removeEventListener('online', alRecuperarInternet)
       window.removeEventListener('focus', recargarSiHaceFalta)
       supabase.removeChannel(canal)
     }

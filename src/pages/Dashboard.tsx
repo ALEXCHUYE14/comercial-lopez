@@ -240,53 +240,65 @@ export function Dashboard() {
     return () => clearTimeout(t)
   }, [ventas.length])
 
-  // Top productos del dia (agrega desde detalle_ventas de las ventas de hoy)
+  // Top productos del dia (agrega desde detalle_ventas de las ventas de hoy).
+  // Cache por venta: antes, CADA venta nueva volvia a descargar el detalle de
+  // TODAS las ventas del dia (con 700 ventas, varios GB al mes — mas de lo que
+  // permite el plan Free de Supabase). Ahora solo se descarga el detalle de las
+  // ventas que aun no estan en cache. La clave incluye total y fecha de
+  // modificacion: si una venta se corrige ("Cambiar producto"), se vuelve a
+  // leer su detalle.
+  const detallePorVentaRef = useRef(new Map<string, { producto_nombre: string; cantidad: number }[]>())
   useEffect(() => {
-    // Las ventas cambian con cada venta nueva: una carga anterior que termine
-    // tarde no debe pisar el resultado de la mas reciente.
     let vigente = true
-    async function cargarTop() {
-      const ids = ventas.map((v) => v.id)
-      if (ids.length === 0) {
-        setTopProductos([])
-        return
-      }
-      // De a 150 ventas por consulta (una lista enorme de IDs no entra en la
-      // URL) y paginando cada tanda: con muchas ventas en el dia el detalle
-      // superaba las 1000 filas que Supabase entrega por consulta.
-      const detalle: DetalleVenta[] = []
+    const claveDe = (v: (typeof ventas)[number]) => `${v.id}|${v.total}|${v.modificada_en ?? ''}`
+    // Espera breve: varias ventas seguidas se resuelven con UNA sola consulta.
+    const t = setTimeout(async () => {
+      const cache = detallePorVentaRef.current
+      const claves = new Map(ventas.map((v) => [claveDe(v), v.id]))
+      // Ventas que ya no estan (anuladas, otro dia) salen del cache.
+      for (const k of [...cache.keys()]) if (!claves.has(k)) cache.delete(k)
+      const faltantes = [...claves].filter(([k]) => !cache.has(k))
       try {
-        for (let i = 0; i < ids.length; i += 150) {
-          const tanda = ids.slice(i, i + 150)
-          detalle.push(
-            ...(await traerTodas<DetalleVenta>((ini, fin) =>
-              supabase
-                .from('detalle_ventas')
-                .select('id, producto_nombre, cantidad, venta_id')
-                .in('venta_id', tanda)
-                .order('id')
-                .range(ini, fin) as unknown as PromiseLike<{ data: DetalleVenta[] | null; error: { message: string } | null }>,
-            )),
+        // De a 150 ventas por consulta (una lista enorme de IDs no entra en la
+        // URL) y paginando cada tanda (maximo 1000 filas por consulta).
+        for (let i = 0; i < faltantes.length; i += 150) {
+          const tanda = faltantes.slice(i, i + 150)
+          const filas = await traerTodas<DetalleVenta>((ini, fin) =>
+            supabase
+              .from('detalle_ventas')
+              .select('id, producto_nombre, cantidad, venta_id')
+              .in('venta_id', tanda.map(([, id]) => id))
+              .order('id')
+              .range(ini, fin) as unknown as PromiseLike<{ data: DetalleVenta[] | null; error: { message: string } | null }>,
           )
+          const porVenta = new Map<string, { producto_nombre: string; cantidad: number }[]>()
+          for (const d of filas) {
+            const lista = porVenta.get(d.venta_id) ?? []
+            lista.push({ producto_nombre: d.producto_nombre, cantidad: Number(d.cantidad) })
+            porVenta.set(d.venta_id, lista)
+          }
+          for (const [k, id] of tanda) cache.set(k, porVenta.get(id) ?? [])
         }
       } catch {
-        return // sin conexion: se conserva el top anterior
+        return // sin conexion: se reintenta con la proxima venta
       }
       if (!vigente) return
       const mapa = new Map<string, number>()
-      detalle.forEach((d) => {
-        mapa.set(d.producto_nombre, (mapa.get(d.producto_nombre) ?? 0) + Number(d.cantidad))
-      })
+      for (const k of claves.keys()) {
+        for (const d of cache.get(k) ?? []) {
+          mapa.set(d.producto_nombre, (mapa.get(d.producto_nombre) ?? 0) + d.cantidad)
+        }
+      }
       setTopProductos(
         [...mapa.entries()]
           .map(([nombre, cantidad]) => ({ nombre, cantidad }))
           .sort((a, b) => b.cantidad - a.cantidad)
           .slice(0, 6),
       )
-    }
-    cargarTop()
+    }, 1500)
     return () => {
       vigente = false
+      clearTimeout(t)
     }
   }, [ventas])
 

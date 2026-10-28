@@ -7,9 +7,13 @@ import type { Categoria, Producto } from '@/types/database'
 // actualizaban) en el POS. Se piden en paginas hasta traerlos todos.
 const TAM_PAGINA = 1000
 
-// Volver a la pestaña/app o recuperar internet dispara una recarga completa;
-// este minimo evita repetirla varias veces seguidas (ej. alt-tab rapido).
-const MIN_MS_ENTRE_RECARGAS = 15_000
+// Plan Free de Supabase (trafico y mensajes limitados): mientras el tiempo
+// real funcione, los cambios de precio/stock llegan solos y recargar la lista
+// completa es trafico desperdiciado. Solo se recarga todo cuando la vista PUDO
+// quedar desactualizada: el canal se cayo (internet intermitente, equipo
+// suspendido) o se recupero la conexion. Como red de seguridad, al volver a la
+// pantalla se recarga tambien si la ultima carga completa tiene mas de 30 min.
+const RECARGA_RESPALDO_MS = 30 * 60_000
 
 async function traerTodosLosProductos(): Promise<Producto[]> {
   const todos: Producto[] = []
@@ -40,6 +44,8 @@ export function useProductos() {
   const [cargando, setCargando] = useState(true)
   const categoriasRef = useRef<Categoria[]>([])
   const ultimaRecargaRef = useRef(0)
+  // true = pudieron perderse cambios en tiempo real desde la ultima carga.
+  const desfaseRef = useRef(false)
   const peticionRef = useRef(0)
 
   const cargar = useCallback(async () => {
@@ -52,6 +58,7 @@ export function useProductos() {
       ])
       // Una recarga mas reciente ya esta en camino: esta respuesta es vieja.
       if (id !== peticionRef.current) return
+      desfaseRef.current = false
       if (!catRes.error) {
         categoriasRef.current = catRes.data ?? []
         setCategorias(catRes.data ?? [])
@@ -116,23 +123,29 @@ export function useProductos() {
         // de ese lapso se PERDIERON — realtime no los reenvia. Al volver a
         // suscribirse se recarga todo para no quedarse con datos viejos.
         if (estado === 'SUBSCRIBED') {
-          if (suscritoAntes) cargar()
+          if (suscritoAntes || desfaseRef.current) cargar()
           suscritoAntes = true
+        } else if (estado === 'CHANNEL_ERROR' || estado === 'TIMED_OUT' || estado === 'CLOSED') {
+          desfaseRef.current = true
         }
       })
 
     function recargarSiHaceFalta() {
       if (document.visibilityState !== 'visible') return
-      if (Date.now() - ultimaRecargaRef.current < MIN_MS_ENTRE_RECARGAS) return
-      cargar()
+      const vieja = Date.now() - ultimaRecargaRef.current > RECARGA_RESPALDO_MS
+      if (desfaseRef.current || vieja) cargar()
+    }
+    function alRecuperarInternet() {
+      desfaseRef.current = true
+      recargarSiHaceFalta()
     }
     document.addEventListener('visibilitychange', recargarSiHaceFalta)
-    window.addEventListener('online', recargarSiHaceFalta)
+    window.addEventListener('online', alRecuperarInternet)
     window.addEventListener('focus', recargarSiHaceFalta)
 
     return () => {
       document.removeEventListener('visibilitychange', recargarSiHaceFalta)
-      window.removeEventListener('online', recargarSiHaceFalta)
+      window.removeEventListener('online', alRecuperarInternet)
       window.removeEventListener('focus', recargarSiHaceFalta)
       supabase.removeChannel(canal)
     }
