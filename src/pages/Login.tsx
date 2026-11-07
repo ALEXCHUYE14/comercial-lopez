@@ -33,50 +33,14 @@ function guardarCorreo(correo: string) {
   }
 }
 
-/* ── Toldo de bodega (motivo de la marca) ─────────────────────────────────── */
-const ROJO_TOLDO = '#c62a22'
-const BLANCO_TOLDO = '#f8f6f3'
-const FRANJA = 28 // ancho de cada franja en px
+/* Foto del local para el panel de marca. Esta en /img, que el service worker
+   no precachea a proposito (ver vite.config.ts): se descarga solo en el login. */
+const FOTO_LOCAL = '/img/fondo-login.jpg'
 
-const franjas = `repeating-linear-gradient(90deg, ${ROJO_TOLDO} 0 ${FRANJA}px, ${BLANCO_TOLDO} ${FRANJA}px ${FRANJA * 2}px)`
-
-const toldoTela: CSSProperties = {
-  backgroundImage: `linear-gradient(180deg, rgba(0,0,0,0) 55%, rgba(0,0,0,0.10) 100%), ${franjas}`,
-}
-
-/* Borde festoneado: cada franja termina en un semicirculo de su mismo color. */
-const mascaraFestones = `radial-gradient(circle at ${FRANJA / 2}px 0, #000 ${FRANJA / 2}px, transparent ${FRANJA / 2 + 0.5}px)`
-const toldoFestones: CSSProperties = {
-  backgroundImage: franjas,
-  height: FRANJA / 2,
-  WebkitMaskImage: mascaraFestones,
-  maskImage: mascaraFestones,
-  WebkitMaskSize: `${FRANJA}px ${FRANJA / 2}px`,
-  maskSize: `${FRANJA}px ${FRANJA / 2}px`,
-  WebkitMaskRepeat: 'repeat-x',
-  maskRepeat: 'repeat-x',
-  filter: 'drop-shadow(0 6px 6px rgba(0,0,0,0.12))',
-}
-
-function Toldo({ alto }: { alto: number }) {
-  return (
-    <div aria-hidden="true" className="relative z-10 w-full shrink-0">
-      <div style={{ ...toldoTela, height: alto }} />
-      <div style={toldoFestones} />
-    </div>
-  )
-}
-
-/* El logo trae su propio fondo gris de estudio; lo fundimos con el panel
-   difuminando los bordes para que se vea como un letrero, no como una foto. */
-const logoFundido: CSSProperties = {
-  WebkitMaskImage: 'radial-gradient(closest-side, #000 72%, transparent 100%)',
-  maskImage: 'radial-gradient(closest-side, #000 72%, transparent 100%)',
-}
-
-const fondoPanel: CSSProperties = {
+/* Velo inferior: da contraste a la fecha y la hora sobre la foto. */
+const veloInferior: CSSProperties = {
   background:
-    'radial-gradient(ellipse 80% 60% at 50% 42%, #eeeff0 0%, #e2e3e5 55%, #d6d7da 100%)',
+    'linear-gradient(180deg, rgba(14,14,13,0) 0%, rgba(14,14,13,0.55) 45%, rgba(14,14,13,0.88) 100%)',
 }
 
 /* ── Reloj de turno ───────────────────────────────────────────────────────── */
@@ -150,38 +114,35 @@ export function Login() {
     'disabled:bg-ink-50 disabled:text-ink-400'
 
   return (
-    <div className="flex min-h-[100dvh] flex-col bg-white md:flex-row">
-      {/* ═══ Panel de marca (tablet/escritorio) ═══ */}
+    <div className="flex min-h-[100dvh] flex-col bg-white lg:flex-row">
+      {/* ═══ Panel de marca con la foto del local (escritorio) ═══ */}
       <aside
         aria-hidden="true"
-        className="relative hidden min-h-[100dvh] flex-col md:flex md:w-[46%] lg:w-[50%]"
-        style={fondoPanel}
+        className="relative hidden min-h-[100dvh] w-1/2 shrink-0 overflow-hidden bg-ink-950 lg:block"
       >
-        <Toldo alto={72} />
+        <img
+          src={FOTO_LOCAL}
+          alt=""
+          draggable={false}
+          decoding="async"
+          className="absolute inset-0 size-full select-none object-cover"
+          style={{ objectPosition: '50% 35%' }}
+          onError={(e) => {
+            e.currentTarget.style.display = 'none'
+          }}
+        />
+        <div className="absolute inset-x-0 bottom-0 h-[38%]" style={veloInferior} />
 
-        <div className="flex flex-1 items-center justify-center px-10 py-6">
-          <img
-            src="/img/logo.png"
-            alt=""
-            draggable={false}
-            className="w-full max-w-[460px] select-none"
-            style={logoFundido}
-            onError={(e) => {
-              e.currentTarget.style.visibility = 'hidden'
-            }}
-          />
-        </div>
-
-        <div className="flex items-end justify-between gap-6 px-10 pb-9 text-ink-700">
+        <div className="absolute inset-x-0 bottom-0 flex items-end justify-between gap-6 px-10 pb-9 text-white">
           <div>
-            <p className="font-display text-[15px] font-semibold text-ink-900">
+            <p className="font-display text-[15px] font-semibold">
               {capitalizar(fmtFecha.format(ahora))}
             </p>
-            <p className="mt-0.5 text-[13px] text-ink-500">Abre tu turno al ingresar</p>
+            <p className="mt-0.5 text-[13px] text-white/70">Abre tu turno al ingresar</p>
           </div>
-          <p className="font-display text-[44px] font-semibold leading-none tracking-[-0.03em] text-ink-900 tabular">
+          <p className="font-display text-[44px] font-semibold leading-none tracking-[-0.03em] tabular">
             {horaTexto(ahora)}
-            <span className="ml-1.5 align-top text-[15px] font-medium tracking-normal text-ink-500">
+            <span className="ml-1.5 align-top text-[15px] font-medium tracking-normal text-white/70">
               {ahora.getHours() < 12 ? 'a. m.' : 'p. m.'}
             </span>
           </p>
@@ -190,23 +151,27 @@ export function Login() {
 
       {/* ═══ Formulario ═══ */}
       <main className="flex min-h-[100dvh] flex-1 flex-col">
-        {/* Encabezado movil: toldo + marca */}
-        <div className="md:hidden">
-          <Toldo alto={34} />
+        {/* Movil y tablet: franja con la foto del local */}
+        <div
+          aria-hidden="true"
+          className="relative h-[clamp(160px,38vw,300px)] shrink-0 overflow-hidden bg-ink-950 lg:hidden"
+        >
+          <img
+            src={FOTO_LOCAL}
+            alt=""
+            draggable={false}
+            decoding="async"
+            className="size-full select-none object-cover"
+            style={{ objectPosition: '50% 30%' }}
+            onError={(e) => {
+              e.currentTarget.style.display = 'none'
+            }}
+          />
         </div>
 
         <div className="flex flex-1 items-center justify-center px-5 py-10 sm:px-10">
           <div className="w-full max-w-[368px]">
-            <div className="mb-9 flex items-center gap-3.5">
-              <img
-                src="/img/logo.png"
-                alt=""
-                className="size-14 shrink-0 rounded-2xl object-cover ring-1 ring-ink-100 md:hidden"
-                style={{ objectPosition: '50% 58%' }}
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none'
-                }}
-              />
+            <div className="mb-9">
               <p className="font-display text-[15px] font-semibold leading-snug text-ink-900">
                 {nombreNegocio}
               </p>
@@ -324,7 +289,7 @@ export function Login() {
           </div>
         </div>
 
-        <footer className="safe-bottom px-5 pb-6 text-center text-xs text-ink-400 sm:px-10 md:text-left">
+        <footer className="safe-bottom px-5 pb-6 text-center text-xs text-ink-400 sm:px-10 lg:text-left">
           © {anio} {nombreNegocio}. Acceso solo para personal autorizado.
         </footer>
       </main>
