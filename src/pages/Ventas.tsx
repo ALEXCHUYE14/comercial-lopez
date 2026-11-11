@@ -35,7 +35,17 @@ import { traerTodas } from '@/utils/paginar'
 import { descargarCSV } from '@/utils/csv'
 import { admiteVuelto, lineasPago, metodoParaQr, montoPorMetodo, textoPagos } from '@/utils/pagos'
 import { etiquetaModalidad } from '@/utils/presentaciones'
-import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
+import {
+  MENSAJE_GRACIAS,
+  cajeroTicket,
+  clienteTicket,
+  construirTicketHtml,
+  fechaHoraTicket,
+  imprimirTicketHtml,
+  numeroNotaVenta,
+  type TicketDatos,
+  type TicketLinea,
+} from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
@@ -883,14 +893,21 @@ function TicketReprint({
           <p className="break-words font-display text-base font-black">{negocio.nombre.toUpperCase()}</p>
           {textoDocumento(negocio) && <p className="text-[0.8rem]">{textoDocumento(negocio)}</p>}
           {negocio.direccion && <p className="break-words text-[0.8rem]">{negocio.direccion}</p>}
-          <p className="mx-auto mt-1.5 inline-block border-2 border-black px-2.5 py-0.5 font-black">
-            {venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)'}
-          </p>
-          <p className="mt-1 text-[0.8rem]">{fechaHora(venta.creado_en)}</p>
-          <p className="break-words text-[0.8rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
+          <p className="mt-2.5 font-black tracking-wide">NOTA DE VENTA</p>
+          <p className="font-black">{numeroNotaVenta(venta.numero)}</p>
+          {venta.anulada && <p className="mt-1 font-black">*** VENTA ANULADA ***</p>}
         </div>
 
-        <div className="border-t-2 border-black pt-2">
+        <div className="space-y-0.5 border-t border-dashed border-black py-2.5 text-[0.8rem]">
+          <Fila k="Fecha" v={fechaHoraTicket(venta.creado_en).fecha} />
+          {fechaHoraTicket(venta.creado_en).hora && (
+            <Fila k="Hora" v={fechaHoraTicket(venta.creado_en).hora} />
+          )}
+          <Fila k="Cajero" v={cajeroTicket(venta.cajero_nombre)} />
+          <Fila k="Cliente" v={clienteTicket(venta.cliente_nombre)} />
+        </div>
+
+        <div className="border-t border-dashed border-black pt-2">
           {cargando ? (
             <div className="grid place-items-center py-6">
               <Spinner className="size-5" />
@@ -912,12 +929,13 @@ function TicketReprint({
           )}
         </div>
 
-        <div className="mt-2.5 space-y-0.5 border-t border-dashed border-black pt-2.5">
-          <Fila k="Subtotal" v={money(Number(venta.subtotal))} />
-          {Number(venta.descuento) > 0 && <Fila k="Descuento" v={'- ' + money(Number(venta.descuento))} />}
-          <Fila k="IGV (18%)" v={money(Number(venta.igv))} />
-        </div>
-        <div className="my-2 flex justify-between border-y-2 border-black py-1.5 font-display text-lg font-black">
+        {Number(venta.descuento) > 0 && (
+          <div className="mt-2.5 space-y-0.5 border-t border-dashed border-black pt-2.5">
+            <Fila k="Subtotal" v={money(Number(venta.subtotal))} />
+            <Fila k="Descuento" v={'- ' + money(Number(venta.descuento))} />
+          </div>
+        )}
+        <div className="my-2 flex justify-between border-y border-dashed border-black py-2 font-display text-lg font-black">
           <span>TOTAL</span>
           <span className="tabular">{money(Number(venta.total))}</span>
         </div>
@@ -936,11 +954,11 @@ function TicketReprint({
           {admiteVuelto(venta.metodo) && Number(venta.vuelto) > 0 && (
             <Fila k="Vuelto" v={money(Number(venta.vuelto))} />
           )}
-          {venta.cliente_nombre && <Fila k="Fiado a" v={venta.cliente_nombre} />}
         </div>
         <div className="mt-2.5 border-t border-dashed border-black pt-2 text-center text-[0.8rem]">
-          <p>¡Gracias por su compra!</p>
-          <p>Vuelva pronto</p>
+          {MENSAJE_GRACIAS.map((l) => (
+            <p key={l}>{l}</p>
+          ))}
         </div>
       </div>
     </Sheet>

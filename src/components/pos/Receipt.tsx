@@ -3,11 +3,21 @@ import { Printer, Bluetooth, Check } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
-import { money, fechaHora, cantidad } from '@/utils/format'
+import { money, cantidad } from '@/utils/format'
 import { etiquetaModalidadDe, precioPresentacion } from '@/utils/presentaciones'
 import { admiteVuelto, lineasPago, metodoParaQr } from '@/utils/pagos'
 import { useNegocio, textoDocumento } from '@/config/negocio'
-import { construirTicketHtml, imprimirTicketHtml, type TicketDatos, type TicketLinea } from '@/utils/ticket'
+import {
+  MENSAJE_GRACIAS,
+  cajeroTicket,
+  clienteTicket,
+  construirTicketHtml,
+  fechaHoraTicket,
+  imprimirTicketHtml,
+  numeroNotaVenta,
+  type TicketDatos,
+  type TicketLinea,
+} from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
@@ -163,14 +173,24 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           <p className="break-words text-base font-black">{negocio.nombre.toUpperCase()}</p>
           {textoDocumento(negocio) && <p className="text-[0.8rem]">{textoDocumento(negocio)}</p>}
           {negocio.direccion && <p className="break-words text-[0.8rem]">{negocio.direccion}</p>}
-          <p className="mx-auto mt-1.5 inline-block border-2 border-black px-2.5 py-0.5 font-black">
-            {venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)'}
-          </p>
-          <p className="mt-1 text-[0.8rem]">{fechaHora(venta.creado_en)}</p>
-          <p className="break-words text-[0.8rem]">Cajero: {venta.cajero_nombre ?? '-'}</p>
+          <p className="mt-2.5 font-black tracking-wide">NOTA DE VENTA</p>
+          <p className="font-black">{numeroNotaVenta(venta.numero)}</p>
+          {venta.anulada && <p className="mt-1 font-black">*** VENTA ANULADA ***</p>}
         </div>
 
-        <hr className="my-2 border-t-2 border-black" />
+        <hr className="my-2 border-dashed border-black" />
+
+        {/* Datos de la venta */}
+        <div className="space-y-0.5 text-[0.8rem]">
+          <PreviewRow k="Fecha" v={fechaHoraTicket(venta.creado_en).fecha} />
+          {fechaHoraTicket(venta.creado_en).hora && (
+            <PreviewRow k="Hora" v={fechaHoraTicket(venta.creado_en).hora} />
+          )}
+          <PreviewRow k="Cajero" v={cajeroTicket(venta.cajero_nombre)} />
+          <PreviewRow k="Cliente" v={clienteTicket(venta.cliente_nombre)} />
+        </div>
+
+        <hr className="my-2 border-dashed border-black" />
 
         {/* Items */}
         <TicketItemsPreview
@@ -182,17 +202,16 @@ export function Receipt({ open, onClose, venta, items }: Props) {
 
         <hr className="my-2 border-dashed border-black" />
 
-        {/* Subtotales */}
-        <div className="space-y-0.5">
-          <PreviewRow k="Subtotal" v={money(venta.subtotal)} />
-          {venta.descuento > 0 && (
+        {/* Subtotal y descuento: solo si hubo descuento */}
+        {venta.descuento > 0 && (
+          <div className="space-y-0.5">
+            <PreviewRow k="Subtotal" v={money(venta.subtotal)} />
             <PreviewRow k="Descuento" v={'- ' + money(venta.descuento)} />
-          )}
-          <PreviewRow k="IGV (18%)" v={money(venta.igv)} />
-        </div>
+          </div>
+        )}
 
         {/* Total */}
-        <div className="my-2 flex justify-between border-y-2 border-black py-1.5 text-lg font-black">
+        <div className="my-2 flex justify-between border-b border-dashed border-black pb-2 text-lg font-black">
           <span>TOTAL</span>
           <span className="tabular">{money(venta.total)}</span>
         </div>
@@ -208,14 +227,12 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           {admiteVuelto(venta.metodo) && venta.vuelto > 0 && (
             <PreviewRow k="Vuelto" v={money(venta.vuelto)} />
           )}
-          {venta.cliente_nombre && (
-            <PreviewRow k="Fiado a" v={venta.cliente_nombre} />
-          )}
         </div>
 
         <div className="mt-2.5 border-t border-dashed border-black pt-2 text-center text-[0.8rem]">
-          <p>¡Gracias por su compra!</p>
-          <p>Vuelva pronto</p>
+          {MENSAJE_GRACIAS.map((l) => (
+            <p key={l}>{l}</p>
+          ))}
         </div>
       </div>
     </Sheet>

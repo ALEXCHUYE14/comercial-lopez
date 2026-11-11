@@ -10,7 +10,7 @@
 // (justo lo que causaba paginas en blanco o mal recortadas al reimprimir
 // desde Ventas). Un documento aislado es lo que garantiza nitidez y
 // consistencia sin importar desde donde se dispare la impresion.
-import { money, fechaHora, escaparHtml } from '@/utils/format'
+import { money, escaparHtml } from '@/utils/format'
 import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { QrTermico } from '@/utils/qrTermico'
 import { admiteVuelto, lineasPago } from '@/utils/pagos'
@@ -105,7 +105,55 @@ export const ESTILOS_BASE_TICKET = `
     .footer { text-align: center; margin-top: 3mm; font-size: 10.5pt; line-height: 1.5; }
 `
 
+/* ── Helpers de presentacion compartidos ──────────────────────────────────────
+   Los usan el ticket HTML, el ESC/POS (Bluetooth) y las vistas previas en
+   pantalla, para que las tres muestren exactamente lo mismo. Son funciones
+   puras: solo formatean datos de una venta ya registrada. */
+
+/** Cliente a mostrar en el ticket: "Público General" si la venta no tiene uno. */
+export const CLIENTE_POR_DEFECTO = 'Público General'
+export function clienteTicket(nombre: string | null | undefined): string {
+  const limpio = (nombre ?? '').trim()
+  return limpio || CLIENTE_POR_DEFECTO
+}
+
+/** Cajero a mostrar: "-" si la venta no lo tiene registrado. */
+export function cajeroTicket(nombre: string | null | undefined): string {
+  return (nombre ?? '').trim() || '-'
+}
+
 /**
+ * Numero correlativo de la nota de venta. numero=0 es la señal de una venta
+ * registrada offline (ver hooks/useVentasOffline.ts) que aun no tiene el
+ * numero real que le asigna el servidor al sincronizar.
+ */
+export function numeroNotaVenta(numero: number): string {
+  return Number(numero) > 0 ? `N° ${numero}` : 'N° pendiente de sincronizar'
+}
+
+/**
+ * Fecha y hora con formato fijo e independiente del navegador:
+ * { fecha: "06/11/2026", hora: "08:04 p. m." }. Se arma a mano (no con
+ * toLocaleString) porque cada motor escribe distinto el "p. m." y algunos
+ * meten espacios Unicode que la impresora termica imprime como "?".
+ */
+export function fechaHoraTicket(iso: string): { fecha: string; hora: string } {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { fecha: String(iso ?? ''), hora: '' }
+  const dos = (n: number) => String(n).padStart(2, '0')
+  const h24 = d.getHours()
+  const h12 = h24 % 12 || 12
+  return {
+    fecha: `${dos(d.getDate())}/${dos(d.getMonth() + 1)}/${d.getFullYear()}`,
+    hora: `${dos(h12)}:${dos(d.getMinutes())} ${h24 < 12 ? 'a. m.' : 'p. m.'}`,
+  }
+}
+
+/** Mensaje final, en dos lineas para que no se parta feo en papel de 58 mm. */
+export const MENSAJE_GRACIAS = ['¡Gracias por su compra!', 'Vuelva pronto'] as const
+
+/**
+ * Ticket de venta interno (nota de venta; no es un comprobante electronico).
  * `qr` es el QR de Yape ya convertido a blanco y negro (ver qrParaTicket en
  * utils/qrTermico.ts), o null/undefined si el ticket no lleva QR.
  */
@@ -115,6 +163,8 @@ export function construirTicketHtml(
   qr?: QrTermico | null,
 ): string {
   const negocio = getNegocio()
+  const { fecha, hora } = fechaHoraTicket(venta.creadoEn)
+
   const encabezadoNegocio = [textoDocumento(negocio), negocio.direccion]
     .filter(Boolean)
     .map((l) => `<div class="sub-header">${escaparHtml(l)}</div>`)
@@ -136,16 +186,21 @@ export function construirTicketHtml(
     })
     .join('')
 
+  // El dataUrl lo genera la propia app (canvas -> PNG); igual se escapa para
+  // que nunca pueda romper el atributo.
   const qrBloque = qr
     ? `<div class="qr">
     <div>Escanea con Yape</div>
-    <img src="${qr.dataUrl}" alt="QR de Yape"/>
+    <img src="${escaparHtml(qr.dataUrl)}" alt="QR de Yape"/>
   </div>`
     : ''
 
-  const descuentoLine =
+  // Subtotal y descuento solo cuando hubo descuento: sin descuento el
+  // subtotal solo repetiria el total.
+  const descuentoLineas =
     venta.descuento > 0
-      ? `<div class="row"><span>Descuento</span><span>- ${money(venta.descuento)}</span></div>`
+      ? `<div class="row"><span>Subtotal</span><span>${money(venta.subtotal)}</span></div>
+  <div class="row"><span>Descuento</span><span>- ${money(venta.descuento)}</span></div>`
       : ''
 
   // Una linea por metodo de pago: una sola en ventas normales; en pago mixto,
@@ -159,48 +214,31 @@ export function construirTicketHtml(
 
   const vueltoLine =
     admiteVuelto(venta.metodo) && venta.vuelto > 0
-      ? `<div class="row row-pago"><span>Vuelto</span><span>${money(venta.vuelto)}</span></div>`
+      ? `<div class="row"><span>Vuelto</span><span>${money(venta.vuelto)}</span></div>`
       : ''
 
-  const clienteLine = venta.clienteNombre
-    ? `<div class="row"><span>Fiado a</span><span>${escaparHtml(venta.clienteNombre)}</span></div>`
+  const horaLine = hora
+    ? `<div class="row"><span>Hora</span><span>${escaparHtml(hora)}</span></div>`
     : ''
 
-  const anuladaBanner = venta.anulada
-    ? `<div class="anulada">*** COMPROBANTE ANULADO ***</div>`
-    : ''
-
-  // numero=0 es la señal de una venta registrada offline (ver
-  // hooks/useVentasOffline.ts) que aun no tiene el numero correlativo real
-  // que le asigna el servidor al sincronizar.
-  const numeroTicket =
-    venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)'
+  const anuladaAviso = venta.anulada ? `<div class="anulada">*** VENTA ANULADA ***</div>` : ''
 
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>${venta.numero > 0 ? `Ticket N° ${venta.numero}` : 'Ticket'}</title>
+  <title>${escaparHtml(venta.numero > 0 ? `Nota de venta N° ${venta.numero}` : 'Nota de venta')}</title>
   <style>${ESTILOS_BASE_TICKET}
-    .ticket-num {
-      display: inline-block;
-      margin: 1.5mm 0 0.5mm;
-      padding: 0.5mm 2.5mm;
-      border: 2px solid #000;
-      font-size: 12.5pt;
-      font-weight: 900;
-    }
+    /* Titulo del documento: texto libre y centrado, sin marco */
+    .doc-titulo { margin-top: 3mm; text-align: center; font-size: 13pt; font-weight: 900; letter-spacing: 0.06em; }
+    .doc-numero { text-align: center; font-size: 11.5pt; font-weight: 900; }
 
-    /* Aviso de comprobante anulado */
-    .anulada {
-      margin: 2mm 0;
-      text-align: center;
-      font-size: 12pt;
-      font-weight: 900;
-      border: 2.5px solid #000;
-      padding: 1.5mm;
-    }
+    /* Datos de la venta */
+    .datos .row { font-size: 10.5pt; line-height: 1.45; }
+
+    /* Aviso de venta anulada */
+    .anulada { margin-top: 2mm; text-align: center; font-size: 12pt; font-weight: 900; }
 
     /* Listado de productos */
     .items { width: 100%; border-collapse: collapse; table-layout: auto; }
@@ -211,19 +249,22 @@ export function construirTicketHtml(
       padding: 0 0 1.2mm;
       border-bottom: 1.5px solid #000;
     }
+    .items th.c-imp { text-align: right; }
     .items td { font-size: 10.5pt; font-weight: 700; line-height: 1.3; padding: 1.2mm 0 0; vertical-align: top; }
     .items tr { break-inside: avoid; }
     .items .c-cant { width: 1%; white-space: nowrap; padding-right: 2.5mm; }
-    .items .c-desc { word-break: break-word; }
+    .items .c-desc { word-break: break-word; overflow-wrap: anywhere; }
     .items .c-imp { width: 1%; white-space: nowrap; text-align: right; padding-left: 2.5mm; }
     .items .sub { font-size: 9pt; font-weight: 700; margin-top: 0.3mm; }
 
-    /* Metodo de pago y vuelto */
-    .row-pago { font-size: 12pt; font-weight: 900; }
+    /* Metodo de pago */
+    .row-pago { font-weight: 900; }
 
-    /* QR de Yape: bitmap 1-bit sin suavizado, para que los modulos salgan
-       con bordes duros y el celular lo lea a la primera. */
-    .qr { text-align: center; margin-top: 3mm; font-size: 11pt; font-weight: 900; break-inside: avoid; }
+    .gracias { text-align: center; margin-top: 3mm; font-size: 10.5pt; font-weight: 700; }
+
+    /* QR de Yape (opcional, se activa en Configuracion): bitmap 1-bit sin
+       suavizado, para que el celular lo lea a la primera. */
+    .qr { text-align: center; margin-top: 3mm; font-size: 10pt; font-weight: 900; break-inside: avoid; }
     .qr img {
       display: block;
       width: 40mm;
@@ -241,14 +282,21 @@ export function construirTicketHtml(
   <div class="header">
     <div class="nombre-negocio">${escaparHtml(negocio.nombre.toUpperCase())}</div>
     ${encabezadoNegocio}
-    <div class="ticket-num">${numeroTicket}</div>
-    <div class="sub-header">${escaparHtml(fechaHora(venta.creadoEn))}</div>
-    <div class="sub-header">Cajero: ${escaparHtml(venta.cajeroNombre ?? '-')}</div>
+    <div class="doc-titulo">NOTA DE VENTA</div>
+    <div class="doc-numero">${escaparHtml(numeroNotaVenta(venta.numero))}</div>
+    ${anuladaAviso}
   </div>
 
-  ${anuladaBanner}
+  <hr class="sep-dash"/>
 
-  <hr class="sep-solid"/>
+  <div class="datos">
+    <div class="row"><span>Fecha</span><span>${escaparHtml(fecha)}</span></div>
+    ${horaLine}
+    <div class="row"><span>Cajero</span><span>${escaparHtml(cajeroTicket(venta.cajeroNombre))}</span></div>
+    <div class="row"><span>Cliente</span><span>${escaparHtml(clienteTicket(venta.clienteNombre))}</span></div>
+  </div>
+
+  <hr class="sep-dash"/>
 
   <table class="items">
     <thead>
@@ -260,29 +308,20 @@ export function construirTicketHtml(
 
   <hr class="sep-dash"/>
 
-  <div class="row"><span>Subtotal</span><span>${money(venta.subtotal)}</span></div>
-  ${descuentoLine}
-  <div class="row"><span>IGV (18%)</span><span>${money(venta.igv)}</span></div>
-
-  <hr class="sep-solid"/>
-
+  ${descuentoLineas}
   <div class="row-total">
     <span>TOTAL</span>
     <span>${money(venta.total)}</span>
   </div>
 
-  <hr class="sep-solid"/>
+  <hr class="sep-dash"/>
 
   ${pagoLineas}
   ${vueltoLine}
-  ${clienteLine}
 
   <hr class="sep-dash"/>
 
-  <div class="footer">
-    <div>¡Gracias por su compra!</div>
-    <div>Vuelva pronto</div>
-  </div>
+  <div class="gracias">${MENSAJE_GRACIAS.map((l) => `<div>${escaparHtml(l)}</div>`).join('')}</div>
 
   ${qrBloque}
 

@@ -4,10 +4,19 @@
 // directamente). Reutiliza el MISMO contenido que construirTicketHtml (sin
 // logo, igual al ticket que ya se ve en pantalla) para que ambas vias de
 // impresion muestren siempre la misma informacion.
-import { money, fechaHora } from '@/utils/format'
+import { money } from '@/utils/format'
 import { getNegocio, textoDocumento } from '@/config/negocio'
 import type { QrTermico } from '@/utils/qrTermico'
-import { subLinea, type TicketDatos, type TicketLinea } from '@/utils/ticket'
+import {
+  MENSAJE_GRACIAS,
+  cajeroTicket,
+  clienteTicket,
+  fechaHoraTicket,
+  numeroNotaVenta,
+  subLinea,
+  type TicketDatos,
+  type TicketLinea,
+} from '@/utils/ticket'
 import { admiteVuelto, lineasPago } from '@/utils/pagos'
 
 const ETIQUETA_METODO: Record<string, string> = {
@@ -276,10 +285,10 @@ export class ConstructorTicket {
 }
 
 /**
- * Arma los bytes ESC/POS del ticket de venta — mismo contenido que
- * construirTicketHtml (sin logo), listo para enviarse por Bluetooth. `qr` es
- * el QR de Yape ya convertido a blanco y negro (ver qrParaTicket en
- * utils/qrTermico.ts), o null/undefined si el ticket no lleva QR.
+ * Arma los bytes ESC/POS del ticket de venta interno (nota de venta) — mismo
+ * contenido y orden que construirTicketHtml, listo para enviarse por
+ * Bluetooth. `qr` es el QR de Yape ya convertido a blanco y negro (ver
+ * qrParaTicket en utils/qrTermico.ts), o null/undefined si no lleva QR.
  */
 export function construirTicketEscPos(
   venta: TicketDatos,
@@ -288,55 +297,55 @@ export function construirTicketEscPos(
 ): Uint8Array<ArrayBuffer> {
   const t = new ConstructorTicket()
   const negocio = getNegocio()
+  const { fecha, hora } = fechaHoraTicket(venta.creadoEn)
 
+  // Cabecera: negocio, documento/direccion y el titulo como texto libre
+  // centrado (sin marco).
   t.tituloGrande(negocio.nombre.toUpperCase())
   const documento = textoDocumento(negocio)
   if (documento) t.centro(documento)
   if (negocio.direccion) t.centro(negocio.direccion)
-  // numero=0 = venta registrada offline, aun sin numero correlativo real
-  // (ver hooks/useVentasOffline.ts).
-  t.centroNegrita(venta.numero > 0 ? `TICKET N° ${venta.numero}` : 'TICKET (pendiente de sincronizar)')
-  t.centro(fechaHora(venta.creadoEn))
-  t.centro(`Cajero: ${venta.cajeroNombre ?? '-'}`)
-
+  t.saltar(1)
+  t.centroNegrita('NOTA DE VENTA')
+  t.centroNegrita(numeroNotaVenta(venta.numero))
   if (venta.anulada) {
-    t.saltar(1).centroNegrita('*** COMPROBANTE ANULADO ***')
+    t.saltar(1).centroNegrita('*** VENTA ANULADA ***')
   }
 
-  t.separador('=')
+  // Datos de la venta
+  t.separador('-')
+  t.fila('Fecha', fecha)
+  if (hora) t.fila('Hora', hora)
+  t.fila('Cajero', cajeroTicket(venta.cajeroNombre))
+  t.fila('Cliente', clienteTicket(venta.clienteNombre))
+
+  // Detalle de productos
+  t.separador('-')
   const tabla = tablaProductos(lineas)
   t.negrita(tabla.cabecera)
   t.separador('-')
   for (const l of tabla.filas) t.negrita(l)
 
+  // Totales
   t.separador('-')
-  t.fila('Subtotal', money(venta.subtotal))
-  if (venta.descuento > 0) t.fila('Descuento', `- ${money(venta.descuento)}`)
-  t.fila('IGV (18%)', money(venta.igv))
-
-  t.separador('=')
-  t.centroNegrita('TOTAL A PAGAR')
+  if (venta.descuento > 0) {
+    t.fila('Subtotal', money(venta.subtotal))
+    t.fila('Descuento', `- ${money(venta.descuento)}`)
+  }
+  t.centroNegrita('TOTAL')
   t.centroGrande(money(venta.total))
-  t.separador('=')
 
-  // fila() en vez de negrita() con texto concatenado: asi el monto queda
-  // alineado al borde derecho, igual que en el ticket HTML (.row-pago usa
-  // justify-between) y que las filas de Vuelto/Fiado a de abajo.
-  // Una linea por metodo (pago mixto: Efectivo y Yape).
+  // Pago: una linea por metodo (pago mixto: Efectivo y Yape).
+  t.separador('-')
   for (const l of lineasPago(venta, (m) => ETIQUETA_METODO[m] ?? m)) {
     t.filaNegrita(l.etiqueta, money(l.monto))
   }
   if (admiteVuelto(venta.metodo) && venta.vuelto > 0) {
-    t.filaNegrita('Vuelto', money(venta.vuelto))
-  }
-  if (venta.clienteNombre) {
-    t.fila('Fiado a', venta.clienteNombre)
+    t.fila('Vuelto', money(venta.vuelto))
   }
 
   t.separador('-')
-  t.saltar(1)
-  t.centro('¡Gracias por su compra!')
-  t.centro('Vuelva pronto')
+  for (const l of MENSAJE_GRACIAS) t.centro(l)
 
   if (qr) {
     t.saltar(1).centro('Escanea con Yape').imagen(qr)
