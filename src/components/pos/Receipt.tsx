@@ -235,9 +235,11 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           </label>
           <input
             id="nombre-cliente-nota"
-            className="input"
+            className="input text-base sm:text-sm"
             type="text"
             autoComplete="off"
+            autoCapitalize="words"
+            enterKeyHint="done"
             maxLength={MAX_NOMBRE_CLIENTE}
             placeholder="Público General"
             value={nombreCliente}
