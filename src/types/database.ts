@@ -352,6 +352,10 @@ export interface Database {
         }
         Returns: Venta
       }
+      asignar_cliente_nota_venta: {
+        Args: { p_venta_id: string; p_nombre: string | null }
+        Returns: Venta
+      }
       registrar_cargo_fiado: {
         Args: { p_cliente_id: string; p_monto: number }
         Returns: ClienteCredito

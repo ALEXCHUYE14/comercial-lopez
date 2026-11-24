@@ -909,6 +909,7 @@ export function POS() {
 
       {ventaHecha && (
         <Receipt
+          key={ventaHecha.id}
           open
           onClose={() => setVentaHecha(null)}
           venta={ventaHecha}

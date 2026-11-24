@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Printer, Bluetooth, Check } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Printer, Bluetooth, Check, User } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
@@ -22,6 +22,8 @@ import { construirTicketEscPos } from '@/utils/escpos'
 import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import { qrParaTicket } from '@/utils/qrTermico'
+import { supabase } from '@/lib/supabase'
+import { mensajeError } from '@/utils/errors'
 import type { ItemCarrito, Venta } from '@/types/database'
 
 const ETIQUETA: Record<string, string> = {
@@ -29,6 +31,22 @@ const ETIQUETA: Record<string, string> = {
   yape: 'Yape',
   fiado: 'Fiado',
   mixto: 'Mixto',
+}
+
+/** Largo maximo del nombre del cliente (igual que en el servidor). */
+const MAX_NOMBRE_CLIENTE = 80
+
+/**
+ * Limpia el nombre escrito por el cajero igual que lo hace el servidor
+ * (asignar_cliente_nota_venta): sin caracteres de control, espacios
+ * colapsados y recortado a MAX_NOMBRE_CLIENTE. Vacio = "Público General".
+ */
+function normalizarNombreCliente(texto: string): string {
+  return texto
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_NOMBRE_CLIENTE)
 }
 
 function precioItem(item: ItemCarrito): number {
@@ -60,6 +78,39 @@ export function Receipt({ open, onClose, venta, items }: Props) {
   const [imprimiendoBt, setImprimiendoBt] = useState(false)
   const [imprimiendoCable, setImprimiendoCable] = useState(false)
 
+  // Nombre del cliente escrito al entregar la nota. Solo en ventas al
+  // contado: en el fiado el cliente es el de la cuenta de credito y no se
+  // cambia (el servidor tambien lo impide).
+  const nombreEditable = !venta.cliente_id && !venta.anulada
+  const [nombreCliente, setNombreCliente] = useState(venta.cliente_nombre ?? '')
+  const clienteFinal = nombreEditable ? normalizarNombreCliente(nombreCliente) || null : venta.cliente_nombre
+  // Venta offline (numero=0): aun no existe en el servidor, el nombre solo
+  // sale en el ticket impreso.
+  const sincronizada = venta.numero > 0
+  // Ultimo nombre ya guardado en el servidor, para no repetir llamadas.
+  const nombreGuardado = useRef<string | null>(venta.cliente_nombre ?? null)
+
+  // Guarda el nombre en la venta (para que salga tambien al reimprimir desde
+  // Ventas). Es "mejor esfuerzo": nunca bloquea ni impide la impresion — si
+  // falla, el ticket se imprime igual con el nombre escrito.
+  function guardarNombreCliente() {
+    if (!nombreEditable || !sincronizada) return
+    const nombre = clienteFinal
+    if (nombre === nombreGuardado.current) return
+    const anterior = nombreGuardado.current
+    nombreGuardado.current = nombre
+    supabase
+      .rpc('asignar_cliente_nota_venta', { p_venta_id: venta.id, p_nombre: nombre })
+      .then(({ error }) => {
+        if (error) {
+          nombreGuardado.current = anterior
+          toast.info(
+            `No se pudo guardar el nombre del cliente en el historial (${mensajeError(error, 'error desconocido')}). El ticket se imprime igual.`,
+          )
+        }
+      })
+  }
+
   function datosTicket(): { datos: TicketDatos; lineas: TicketLinea[] } {
     const lineas: TicketLinea[] = items.map((i) => ({
       cantidadTexto: cantidadTicket(i),
@@ -80,7 +131,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       pagoRecibido: venta.pago_recibido,
       vuelto: venta.vuelto,
       pagos: venta.pagos ?? null,
-      clienteNombre: venta.cliente_nombre,
+      clienteNombre: clienteFinal,
       anulada: venta.anulada,
     }
     return { datos, lineas }
@@ -89,6 +140,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
   // Impresion por cable (o Bluetooth emparejado como impresora del sistema
   // operativo, si el equipo lo permite): usa el dialogo de impresion nativo.
   async function imprimir() {
+    guardarNombreCliente()
     const { datos, lineas } = datosTicket()
     setImprimiendoCable(true)
     try {
@@ -113,6 +165,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       )
       return
     }
+    guardarNombreCliente()
     setImprimiendoBt(true)
     try {
       const { datos, lineas } = datosTicket()
@@ -130,7 +183,10 @@ export function Receipt({ open, onClose, venta, items }: Props) {
   return (
     <Sheet
       open={open}
-      onClose={onClose}
+      onClose={() => {
+        guardarNombreCliente()
+        onClose()
+      }}
       maxWidth="max-w-sm"
       footer={
         <div className="flex flex-col gap-2">
@@ -147,7 +203,14 @@ export function Receipt({ open, onClose, venta, items }: Props) {
               <Bluetooth className="size-4" /> Bluetooth
             </Button>
           </div>
-          <Button variant="secondary" className="w-full" onClick={onClose}>
+          <Button
+            variant="secondary"
+            className="w-full"
+            onClick={() => {
+              guardarNombreCliente()
+              onClose()
+            }}
+          >
             Nueva venta
           </Button>
         </div>
@@ -163,6 +226,31 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           {venta.numero > 0 ? `Comprobante #${venta.numero}` : 'Pendiente de sincronizar'}
         </p>
       </div>
+
+      {/* Nombre del cliente (opcional) para la nota de venta */}
+      {nombreEditable && (
+        <div className="mb-4">
+          <label htmlFor="nombre-cliente-nota" className="label mb-1 flex items-center gap-1.5">
+            <User className="size-3.5" /> Nombre del cliente (opcional)
+          </label>
+          <input
+            id="nombre-cliente-nota"
+            className="input"
+            type="text"
+            autoComplete="off"
+            maxLength={MAX_NOMBRE_CLIENTE}
+            placeholder="Público General"
+            value={nombreCliente}
+            onChange={(e) => setNombreCliente(e.target.value)}
+            onBlur={guardarNombreCliente}
+          />
+          {!sincronizada && (
+            <p className="mt-1 text-xs text-ink-400">
+              Saldrá en el ticket impreso. La venta aún no se sincroniza, así que no quedará en el historial.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Vista previa */}
       {/* Mismo formato que el ticket impreso (utils/ticket.ts): todo en negro
@@ -187,7 +275,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
             <PreviewRow k="Hora" v={fechaHoraTicket(venta.creado_en).hora} />
           )}
           <PreviewRow k="Cajero" v={cajeroTicket(venta.cajero_nombre)} />
-          <PreviewRow k="Cliente" v={clienteTicket(venta.cliente_nombre)} />
+          <PreviewRow k="Cliente" v={clienteTicket(clienteFinal)} />
         </div>
 
         <hr className="my-2 border-dashed border-black" />
