@@ -322,30 +322,35 @@ Deno.serve(async (req: Request) => {
       global: { headers: { Authorization: authHeader } },
       auth: { persistSession: false },
     })
-    const { data: userData, error: userError } = await llamador.auth.getUser()
+    // Sesion y cuerpo de la peticion en paralelo (son independientes).
+    const [{ data: userData, error: userError }, body] = await Promise.all([
+      llamador.auth.getUser(),
+      req.json().then(
+        (b: unknown) => (b && typeof b === 'object' ? (b as Record<string, unknown>) : null),
+        () => null,
+      ),
+    ])
     if (userError || !userData.user) return json({ error: 'Sesión inválida o expirada.' }, 401)
+    if (!body) return json({ error: 'Cuerpo de la petición inválido.' }, 400)
 
-    const { data: perfil } = await llamador
-      .from('perfiles')
-      .select('activo')
-      .eq('id', userData.user.id)
-      .single()
-    if (!perfil?.activo) return json({ error: 'Tu usuario está inactivo.' }, 403)
+    const accion = body.accion === 'consultar' ? 'consultar' : 'emitir'
+    const ventaId = typeof body.venta_id === 'string' ? body.venta_id : ''
+    if (!/^[0-9a-f-]{36}$/i.test(ventaId)) return json({ error: 'Venta inválida.' }, 400)
 
     // Service role: SOLO para guardar el resultado de Nubefact y leer la venta.
     const admin = createClient(supabaseUrl, serviceRoleKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     })
 
-    let body: Record<string, unknown>
-    try {
-      body = await req.json()
-    } catch {
-      return json({ error: 'Cuerpo de la petición inválido.' }, 400)
-    }
-    const accion = body.accion === 'consultar' ? 'consultar' : 'emitir'
-    const ventaId = typeof body.venta_id === 'string' ? body.venta_id : ''
-    if (!/^[0-9a-f-]{36}$/i.test(ventaId)) return json({ error: 'Venta inválida.' }, 400)
+    // Perfil activo y estado previo del comprobante, en paralelo. El estado
+    // previo dice si un intento anterior pudo haber llegado a Nubefact.
+    const leerPrevio = () =>
+      admin.from('comprobantes').select('estado, intentos').eq('venta_id', ventaId).maybeSingle()
+    const [{ data: perfil }, primerPrevio] = await Promise.all([
+      llamador.from('perfiles').select('activo').eq('id', userData.user.id).single(),
+      leerPrevio(),
+    ])
+    if (!perfil?.activo) return json({ error: 'Tu usuario está inactivo.' }, 403)
 
     // ── Consultar estado ante SUNAT (solo lectura) ─────────────────────────
     if (accion === 'consultar') {
@@ -380,11 +385,8 @@ Deno.serve(async (req: Request) => {
 
     for (let vuelta = 0; vuelta <= MAX_REASIGNACIONES; vuelta++) {
       // Estado previo: ¿pudo un intento anterior haber llegado a Nubefact?
-      const { data: previo } = await admin
-        .from('comprobantes')
-        .select('estado, intentos')
-        .eq('venta_id', ventaId)
-        .maybeSingle()
+      // (En la primera vuelta ya se leyo arriba, en paralelo con el perfil.)
+      const { data: previo } = vuelta === 0 ? primerPrevio : await leerPrevio()
       const posiblementeEnviado = !!previo && previo.estado === 'pendiente' && previo.intentos > 0
 
       const { data: reservado, error: errReserva } = await llamador.rpc('reservar_comprobante', argsReserva)
@@ -392,16 +394,16 @@ Deno.serve(async (req: Request) => {
       const comp = reservado as Comprobante
       if (comp.estado === 'emitido' || comp.estado === 'aceptado') return json({ comprobante: comp }, 200)
 
-      const { data: venta, error: errVenta } = await admin
-        .from('ventas')
-        .select('total, descuento, metodo, anulada')
-        .eq('id', ventaId)
-        .single()
+      // Venta y detalle en paralelo. Se leen DESPUES de reservar: desde ese
+      // momento la venta queda bloqueada (no se puede cambiar ni anular).
+      const [{ data: venta, error: errVenta }, { data: detalle, error: errDet }] = await Promise.all([
+        admin.from('ventas').select('total, descuento, metodo, anulada').eq('id', ventaId).single(),
+        admin
+          .from('detalle_ventas')
+          .select('producto_nombre, cantidad, modalidad, modalidad_nombre, precio_unitario, subtotal, productos(unidad)')
+          .eq('venta_id', ventaId),
+      ])
       if (errVenta || !venta) return json({ error: 'No se pudo leer la venta.' }, 500)
-      const { data: detalle, error: errDet } = await admin
-        .from('detalle_ventas')
-        .select('producto_nombre, cantidad, modalidad, modalidad_nombre, precio_unitario, subtotal, productos(unidad)')
-        .eq('venta_id', ventaId)
       if (errDet) return json({ error: 'No se pudo leer el detalle de la venta.' }, 500)
 
       const armado = armarDocumento(comp, venta, (detalle ?? []) as unknown as Detalle[])

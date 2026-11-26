@@ -73,6 +73,40 @@ export function consultarComprobante(ventaId: string) {
   return invocar({ accion: 'consultar', venta_id: ventaId })
 }
 
+export interface DatosDocumento {
+  encontrado: boolean
+  nombre?: string
+  direccion?: string
+  /** Solo RUC: estado y condicion del contribuyente en SUNAT. */
+  estado?: string
+  condicion?: string
+}
+
+/**
+ * Nombre del DNI (RENIEC) o razon social y direccion del RUC (SUNAT), via la
+ * Edge Function "consultar-documento" (el token nunca llega al navegador).
+ * Lanza un Error con mensaje legible si el servicio no esta disponible.
+ */
+export async function consultarDocumento(tipo: 'dni' | 'ruc', numero: string): Promise<DatosDocumento> {
+  const { data, error } = await supabase.functions.invoke('consultar-documento', { body: { tipo, numero } })
+  if (error) {
+    const msg = await mensajeErrorFuncion(error, 'No se pudo consultar el documento.')
+    if (/not found|404|failed to send/i.test(msg)) {
+      throw new Error('La consulta automática no está instalada (Edge Function "consultar-documento").')
+    }
+    throw new Error(msg)
+  }
+  const r = (data ?? {}) as DatosDocumento & { error?: string }
+  if (r.error) throw new Error(r.error)
+  return {
+    encontrado: !!r.encontrado,
+    nombre: typeof r.nombre === 'string' ? r.nombre : undefined,
+    direccion: typeof r.direccion === 'string' ? r.direccion : undefined,
+    estado: typeof r.estado === 'string' ? r.estado : undefined,
+    condicion: typeof r.condicion === 'string' ? r.condicion : undefined,
+  }
+}
+
 /**
  * Abre el PDF/enlace de Nubefact solo si es https y del dominio de Nubefact
  * (nunca un enlace arbitrario guardado en la base).

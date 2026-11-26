@@ -4,9 +4,9 @@
 //
 // No se muestra nada si la facturacion esta desactivada o si aun no se
 // ejecuto el SQL en Supabase: el resto del sistema sigue igual que antes.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { FileText, RefreshCw, ExternalLink, AlertTriangle, CheckCircle2, Clock } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
+import { Button, Spinner } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
 import { supabase } from '@/lib/supabase'
 import { cx, money } from '@/utils/format'
@@ -15,6 +15,7 @@ import {
   MONTO_BOLETA_CON_DNI,
   abrirEnlaceComprobante,
   consultarComprobante,
+  consultarDocumento,
   emitirComprobante,
   numeroComprobante,
   validarCliente,
@@ -50,6 +51,18 @@ export function ComprobanteElectronico({ venta, onComprobante, tipo: tipoExterno
   const [consultando, setConsultando] = useState(false)
   const total = Number(venta.total)
 
+  // Consulta automatica DNI (RENIEC) / RUC (SUNAT) para llenar el nombre.
+  // Nunca bloquea: si falla, el cajero escribe los datos a mano.
+  type Busqueda =
+    | { estado: 'idle' }
+    | { estado: 'buscando'; fuente: string }
+    | { estado: 'ok'; fuente: string; alerta?: string }
+    | { estado: 'no' | 'error'; mensaje: string }
+  const [busqueda, setBusqueda] = useState<Busqueda>({ estado: 'idle' })
+  const [reintento, setReintento] = useState(0)
+  const pedidoActual = useRef(0)
+  const ultimoBuscado = useRef<string | null>(null)
+
   const publicar = useCallback(
     (c: Comprobante | null) => {
       setComp(c)
@@ -57,6 +70,64 @@ export function ComprobanteElectronico({ venta, onComprobante, tipo: tipoExterno
     },
     [onComprobante],
   )
+
+  useEffect(() => {
+    const doc = cliente.num_doc.replace(/\D/g, '')
+    const t =
+      cliente.tipo_doc === '1' && /^\d{8}$/.test(doc)
+        ? 'dni'
+        : cliente.tipo_doc === '6' && /^(10|15|16|17|20)\d{9}$/.test(doc)
+          ? 'ruc'
+          : null
+    // Documento incompleto: se cancela cualquier busqueda en curso.
+    if (!t) {
+      pedidoActual.current++
+      ultimoBuscado.current = null
+      setBusqueda({ estado: 'idle' })
+      return
+    }
+    // Comprobante ya enviado o pendiente: sus datos quedan fijos.
+    if (cargando || enviando || (comp && comp.estado !== 'rechazado')) return
+    const clave = `${t}:${doc}`
+    if (clave === ultimoBuscado.current) return
+    const id = ++pedidoActual.current
+    const fuente = t === 'dni' ? 'RENIEC' : 'SUNAT'
+    const timer = setTimeout(async () => {
+      ultimoBuscado.current = clave
+      setBusqueda({ estado: 'buscando', fuente })
+      try {
+        const r = await consultarDocumento(t, doc)
+        if (id !== pedidoActual.current) return // el numero cambio mientras tanto
+        if (r.encontrado && r.nombre) {
+          const nombre = r.nombre
+          setCliente((c) =>
+            c.num_doc.replace(/\D/g, '') === doc
+              ? { ...c, denominacion: nombre, direccion: r.direccion || c.direccion }
+              : c,
+          )
+          const alerta =
+            t === 'ruc' && ((r.estado && r.estado !== 'ACTIVO') || (r.condicion && r.condicion !== 'HABIDO'))
+              ? `Atención: este RUC figura en SUNAT como ${[r.estado, r.condicion].filter(Boolean).join(' / ')}.`
+              : undefined
+          setBusqueda({ estado: 'ok', fuente, alerta })
+        } else {
+          setBusqueda({
+            estado: 'no',
+            mensaje: `No se encontró ese ${t === 'dni' ? 'DNI' : 'RUC'}. Escribe el nombre a mano.`,
+          })
+        }
+      } catch (e) {
+        if (id !== pedidoActual.current) return
+        ultimoBuscado.current = null // permite reintentar
+        setBusqueda({
+          estado: 'error',
+          mensaje: `${e instanceof Error ? e.message : 'No se pudo consultar.'} Puedes escribir el nombre a mano.`,
+        })
+      }
+    }, 300)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cliente.tipo_doc, cliente.num_doc, cargando, enviando, comp?.estado, reintento])
 
   useEffect(() => {
     let vivo = true
@@ -301,6 +372,40 @@ export function ComprobanteElectronico({ venta, onComprobante, tipo: tipoExterno
             onChange={(e) => setCliente((c) => ({ ...c, num_doc: e.target.value.replace(/\D/g, '') }))}
           />
         )}
+        {cliente.tipo_doc !== '-' && busqueda.estado !== 'idle' && (
+          <div className="text-xs" role="status" aria-live="polite">
+            {busqueda.estado === 'buscando' && (
+              <p className="flex items-center gap-1.5 text-ink-500">
+                <Spinner className="size-3" /> Buscando en {busqueda.fuente}…
+              </p>
+            )}
+            {busqueda.estado === 'ok' && (
+              <>
+                <p className="flex items-center gap-1 text-accent-700">
+                  <CheckCircle2 className="size-3.5" /> Datos de {busqueda.fuente}. Puedes corregirlos si hace falta.
+                </p>
+                {busqueda.alerta && <p className="mt-0.5 text-amber-700">{busqueda.alerta}</p>}
+              </>
+            )}
+            {(busqueda.estado === 'no' || busqueda.estado === 'error') && (
+              <p className="text-amber-700">
+                {busqueda.mensaje}
+                {busqueda.estado === 'error' && (
+                  <>
+                    {' '}
+                    <button
+                      type="button"
+                      className="font-semibold underline"
+                      onClick={() => setReintento((n) => n + 1)}
+                    >
+                      Reintentar
+                    </button>
+                  </>
+                )}
+              </p>
+            )}
+          </div>
+        )}
         <input
           className="input text-base sm:text-sm"
           autoComplete="off"
@@ -348,6 +453,11 @@ export function ComprobanteElectronico({ venta, onComprobante, tipo: tipoExterno
           <>Emitir {tipo === 'boleta' ? 'boleta' : 'factura'}</>
         )}
       </Button>
+      {enviando && (
+        <p className="mt-2 text-center text-xs text-ink-500" role="status" aria-live="polite">
+          Enviando a SUNAT… puede tardar unos segundos. No cierres esta ventana.
+        </p>
+      )}
     </div>
   )
 }
