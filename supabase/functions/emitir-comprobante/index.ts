@@ -165,7 +165,6 @@ async function guardar(admin: SupabaseClient, id: string, campos: Record<string,
 
 type Detalle = {
   producto_nombre: string
-  sku: string | null
   cantidad: number | string
   modalidad: string
   modalidad_nombre: string | null
@@ -198,7 +197,9 @@ function armarDocumento(
       d.modalidad_nombre || (d.modalidad === 'caja' ? 'Caja' : d.modalidad === 'saco' ? 'Saco' : null)
     return {
       unidad_de_medida: esKilo ? 'KGM' : 'NIU',
-      codigo: (d.sku ?? '').slice(0, 30),
+      // Sin codigo de producto (es opcional para SUNAT): la linea impresa
+      // queda solo con cantidad, unidad y descripcion, mas facil de leer.
+      codigo: '',
       descripcion: `${d.producto_nombre}${presentacion ? ` (${presentacion})` : ''}`.slice(0, 250),
       cantidad: String(cantidad),
       valor_unitario: (precio / (1 + IGV)).toFixed(10),
@@ -272,7 +273,7 @@ function armarDocumento(
       total_percepcion: '',
       total_incluido_percepcion: '',
       detraccion: 'false',
-      observaciones: `Nota de venta interna N° ${venta.numero}`,
+      observaciones: '',
       documento_que_se_modifica_tipo: '',
       documento_que_se_modifica_serie: '',
       documento_que_se_modifica_numero: '',
@@ -393,13 +394,13 @@ Deno.serve(async (req: Request) => {
 
       const { data: venta, error: errVenta } = await admin
         .from('ventas')
-        .select('numero, total, descuento, metodo, anulada')
+        .select('total, descuento, metodo, anulada')
         .eq('id', ventaId)
         .single()
       if (errVenta || !venta) return json({ error: 'No se pudo leer la venta.' }, 500)
       const { data: detalle, error: errDet } = await admin
         .from('detalle_ventas')
-        .select('producto_nombre, sku, cantidad, modalidad, modalidad_nombre, precio_unitario, subtotal, productos(unidad)')
+        .select('producto_nombre, cantidad, modalidad, modalidad_nombre, precio_unitario, subtotal, productos(unidad)')
         .eq('venta_id', ventaId)
       if (errDet) return json({ error: 'No se pudo leer el detalle de la venta.' }, 500)
 
