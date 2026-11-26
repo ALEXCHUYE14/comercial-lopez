@@ -217,6 +217,49 @@ export type ConfiguracionCaja = {
   actualizado_en: string
 }
 
+// Facturacion electronica (Nubefact) — ver supabase/facturacion_electronica.sql
+export type TipoComprobante = 'boleta' | 'factura'
+export type EstadoComprobante = 'pendiente' | 'emitido' | 'aceptado' | 'rechazado'
+/** Catalogo SUNAT: '1' DNI, '6' RUC, '-' varios (boleta sin documento). */
+export type TipoDocCliente = '1' | '6' | '-'
+
+export type Comprobante = {
+  id: string
+  venta_id: string
+  tipo: TipoComprobante
+  serie: string
+  numero: number
+  cliente_tipo_doc: TipoDocCliente
+  cliente_num_doc: string
+  cliente_denominacion: string
+  cliente_direccion: string | null
+  total: number
+  estado: EstadoComprobante
+  enlace: string | null
+  enlace_pdf: string | null
+  cadena_qr: string | null
+  codigo_hash: string | null
+  sunat_descripcion: string | null
+  error_mensaje: string | null
+  intentos: number
+  creado_por: string | null
+  creado_en: string
+  actualizado_en: string
+}
+
+export type FacturacionConfig = {
+  id: number
+  activo: boolean
+  serie_boleta: string
+  serie_factura: string
+  actualizado_en: string
+}
+
+export type SerieCorrelativo = {
+  serie: string
+  ultimo: number
+}
+
 export type ConfiguracionNegocio = {
   id: 1
   nombre: string
@@ -334,6 +377,9 @@ export interface Database {
       egresos: Tabla<Egreso>
       configuracion_caja: Tabla<ConfiguracionCaja>
       configuracion_negocio: Tabla<ConfiguracionNegocio>
+      comprobantes: Tabla<Comprobante>
+      facturacion_config: Tabla<FacturacionConfig>
+      series_correlativo: Tabla<SerieCorrelativo>
       alertas_arqueo: Tabla<AlertaArqueo>
     }
     Views: Record<string, never>
@@ -453,6 +499,16 @@ export interface Database {
       marcar_alerta_leida: {
         Args: { p_alerta_id: string }
         Returns: AlertaArqueo
+      }
+      guardar_config_facturacion: {
+        Args: {
+          p_activo: boolean
+          p_serie_boleta: string
+          p_serie_factura: string
+          p_ultimo_boleta?: number | null
+          p_ultimo_factura?: number | null
+        }
+        Returns: FacturacionConfig
       }
       importar_clientes: {
         Args: { p_filas: unknown }

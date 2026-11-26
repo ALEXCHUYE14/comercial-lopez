@@ -25,6 +25,7 @@ import {
 import { mensajeErrorFuncion } from '@/utils/errors'
 import { useConfiguracionCaja } from '@/hooks/useConfiguracionCaja'
 import { useConfiguracionNegocio } from '@/hooks/useConfiguracionNegocio'
+import { FacturacionElectronica } from '@/components/configuracion/FacturacionElectronica'
 import type { Perfil, Rol } from '@/types/database'
 
 const ETIQUETA_ROL: Record<Rol, string> = {
@@ -965,6 +966,9 @@ export function Configuracion() {
 
       {/* Sección: QR de Yape */}
       <QrYape />
+
+      {/* Sección: Facturación electrónica (Nubefact) */}
+      <FacturacionElectronica />
 
       {/* Sección: Impresora */}
       <Card className="overflow-hidden">

@@ -20,6 +20,7 @@ import {
 } from '@/utils/ticket'
 import { construirTicketEscPos } from '@/utils/escpos'
 import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
+import { ComprobanteElectronico } from '@/components/ventas/ComprobanteElectronico'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import { qrParaTicket } from '@/utils/qrTermico'
 import { supabase } from '@/lib/supabase'
@@ -253,6 +254,9 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           )}
         </div>
       )}
+
+      {/* Boleta / factura electronica (solo si esta activada en Configuracion) */}
+      <ComprobanteElectronico venta={{ ...venta, cliente_nombre: clienteFinal }} />
 
       {/* Vista previa */}
       {/* Mismo formato que el ticket impreso (utils/ticket.ts): todo en negro

@@ -18,6 +18,7 @@ import { useCajaCtx } from '@/context/CajaContext'
 import { Card, Badge, Button, Spinner } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
 import { CambiarProductoVenta } from '@/components/ventas/CambiarProductoVenta'
+import { ComprobanteElectronico } from '@/components/ventas/ComprobanteElectronico'
 import { useToast } from '@/components/ui/Toast'
 import {
   money,
@@ -710,8 +711,12 @@ function TicketReprint({
   const [anulando, setAnulando] = useState(false)
   const [editando, setEditando] = useState(false)
   const [imprimiendoBt, setImprimiendoBt] = useState(false)
+  // Comprobante electronico vigente: la venta ya no se puede anular ni
+  // cambiar (requiere Nota de Credito; el servidor tambien lo impide).
+  const [conComprobante, setConComprobante] = useState(false)
 
   useEffect(() => {
+    setConComprobante(false)
     if (!venta) return
     setCargando(true)
     supabase
@@ -841,7 +846,7 @@ function TicketReprint({
             </Button>
           </div>
           <div className="flex gap-2">
-            {puedeModificar && !venta.anulada && (
+            {puedeModificar && !venta.anulada && !conComprobante && (
               <Button
                 variant="outline"
                 className="flex-1"
@@ -851,7 +856,7 @@ function TicketReprint({
                 <Pencil className="size-4" /> Cambiar producto
               </Button>
             )}
-            {puedeAnular && !venta.anulada && (
+            {puedeAnular && !venta.anulada && !conComprobante && (
               <Button variant="danger" className="flex-1" onClick={anular} loading={anulando}>
                 <Ban className="size-4" /> Anular
               </Button>
@@ -872,6 +877,11 @@ function TicketReprint({
           <p className="text-xs text-amber-600">Corregido el {fechaHora(venta.modificada_en)}</p>
         )}
       </div>
+
+      <ComprobanteElectronico
+        venta={venta}
+        onComprobante={(c) => setConComprobante(!!c && c.estado !== 'rechazado')}
+      />
 
       {editando && (
         <CambiarProductoVenta
