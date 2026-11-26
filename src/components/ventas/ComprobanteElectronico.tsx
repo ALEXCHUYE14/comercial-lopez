@@ -26,18 +26,24 @@ interface Props {
   venta: Pick<Venta, 'id' | 'numero' | 'total' | 'anulada' | 'metodo' | 'cliente_nombre'>
   /** Avisa al padre si la venta tiene comprobante vigente (para ocultar Anular/Cambiar). */
   onComprobante?: (c: Comprobante | null) => void
+  /**
+   * Tipo elegido desde afuera (selector Nota de venta / Boleta / Factura del
+   * POS). Si se pasa, se oculta el selector propio de este formulario.
+   */
+  tipo?: TipoComprobante
 }
 
 const VACIO: ClienteComprobante = { tipo_doc: '-', num_doc: '', denominacion: '', direccion: '' }
 
-export function ComprobanteElectronico({ venta, onComprobante }: Props) {
+export function ComprobanteElectronico({ venta, onComprobante, tipo: tipoExterno }: Props) {
   const toast = useToast()
   const [activo, setActivo] = useState(false)
   const [cargando, setCargando] = useState(true)
   const [comp, setComp] = useState<Comprobante | null>(null)
-  const [tipo, setTipo] = useState<TipoComprobante>('boleta')
+  const [tipo, setTipo] = useState<TipoComprobante>(tipoExterno ?? 'boleta')
   const [cliente, setCliente] = useState<ClienteComprobante>({
     ...VACIO,
+    tipo_doc: tipoExterno === 'factura' ? '6' : VACIO.tipo_doc,
     denominacion: venta.cliente_nombre ?? '',
   })
   const [enviando, setEnviando] = useState(false)
@@ -92,8 +98,16 @@ export function ComprobanteElectronico({ venta, onComprobante }: Props) {
 
   function cambiarTipo(t: TipoComprobante) {
     setTipo(t)
-    setCliente((c) => ({ ...c, tipo_doc: t === 'factura' ? '6' : c.tipo_doc === '6' ? '6' : c.tipo_doc }))
+    // La factura siempre va con RUC; la boleta conserva lo elegido.
+    if (t === 'factura') setCliente((c) => ({ ...c, tipo_doc: '6' }))
   }
+
+  // Tipo controlado desde afuera: se sigue mientras no exista un comprobante
+  // (uno ya reservado conserva su tipo; el servidor tampoco deja cambiarlo).
+  useEffect(() => {
+    if (tipoExterno && !comp && tipoExterno !== tipo) cambiarTipo(tipoExterno)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tipoExterno])
 
   const errorCliente = validarCliente(tipo, cliente, total)
   const bloqueoFiado = tipo === 'factura' && venta.metodo === 'fiado'
@@ -223,7 +237,8 @@ export function ComprobanteElectronico({ venta, onComprobante }: Props) {
   return (
     <div className="mb-4 rounded-xl border border-ink-200 p-3">
       <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink-900">
-        <FileText className="size-4" /> Boleta / Factura electrónica
+        <FileText className="size-4" />{' '}
+        {tipoExterno ? `Datos del cliente · ${tipo === 'factura' ? 'Factura' : 'Boleta'}` : 'Boleta / Factura electrónica'}
       </p>
 
       {pendiente && (
@@ -242,6 +257,7 @@ export function ComprobanteElectronico({ venta, onComprobante }: Props) {
         </p>
       )}
 
+      {!tipoExterno && (
       <div className="mb-2 grid grid-cols-2 gap-2">
         {(['boleta', 'factura'] as const).map((t) => (
           <button
@@ -258,6 +274,7 @@ export function ComprobanteElectronico({ venta, onComprobante }: Props) {
           </button>
         ))}
       </div>
+      )}
 
       <div className="space-y-2">
         {tipo === 'boleta' && (

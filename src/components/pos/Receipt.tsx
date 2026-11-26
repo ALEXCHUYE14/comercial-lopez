@@ -1,9 +1,9 @@
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Printer, Bluetooth, Check, User } from 'lucide-react'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { useToast } from '@/components/ui/Toast'
-import { money, cantidad } from '@/utils/format'
+import { cx, money, cantidad } from '@/utils/format'
 import { etiquetaModalidadDe, precioPresentacion } from '@/utils/presentaciones'
 import { admiteVuelto, lineasPago, metodoParaQr } from '@/utils/pagos'
 import { useNegocio, textoDocumento } from '@/config/negocio'
@@ -21,11 +21,12 @@ import {
 import { construirTicketEscPos } from '@/utils/escpos'
 import { TicketItemsPreview } from '@/components/pos/TicketItemsPreview'
 import { ComprobanteElectronico } from '@/components/ventas/ComprobanteElectronico'
+import { useFacturacionActiva } from '@/hooks/useFacturacionActiva'
 import { bluetoothDisponible, imprimirPorBluetooth } from '@/utils/bluetoothPrinter'
 import { qrParaTicket } from '@/utils/qrTermico'
 import { supabase } from '@/lib/supabase'
 import { mensajeError } from '@/utils/errors'
-import type { ItemCarrito, Venta } from '@/types/database'
+import type { Comprobante, ItemCarrito, TipoComprobante, Venta } from '@/types/database'
 
 const ETIQUETA: Record<string, string> = {
   efectivo: 'Efectivo',
@@ -78,6 +79,24 @@ export function Receipt({ open, onClose, venta, items }: Props) {
   const negocio = useNegocio()
   const [imprimiendoBt, setImprimiendoBt] = useState(false)
   const [imprimiendoCable, setImprimiendoCable] = useState(false)
+
+  // Tipo de documento a entregar. Con la facturacion activa (Ajustes) se
+  // elige entre Nota de venta / Boleta / Factura y cada opcion muestra SOLO
+  // lo suyo. Sin facturacion activa todo queda como antes: solo nota.
+  // Boleta/factura requieren la venta ya registrada en el servidor (no
+  // offline) y no anulada.
+  const facturacionActiva = useFacturacionActiva()
+  const puedeComprobante = facturacionActiva === true && venta.numero > 0 && !venta.anulada
+  const [modo, setModo] = useState<'nota' | TipoComprobante>('nota')
+  // Una vez reservado/emitido un comprobante, su tipo queda fijo (el
+  // servidor tampoco permite cambiarlo): el selector se bloquea en ese tipo.
+  const [tipoFijado, setTipoFijado] = useState<TipoComprobante | null>(null)
+  const modoActivo: 'nota' | TipoComprobante = puedeComprobante ? modo : 'nota'
+  const alComprobante = useCallback((c: Comprobante | null) => {
+    if (!c) return
+    setTipoFijado(c.tipo)
+    setModo(c.tipo)
+  }, [])
 
   // Nombre del cliente escrito al entregar la nota. Solo en ventas al
   // contado: en el fiado el cliente es el de la cuenta de credito y no se
@@ -191,6 +210,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
       maxWidth="max-w-sm"
       footer={
         <div className="flex flex-col gap-2">
+          {modoActivo === 'nota' && (
           <div className="flex gap-2">
             <Button variant="outline" className="flex-1" loading={imprimiendoCable} onClick={imprimir}>
               <Printer className="size-4" /> Imprimir (cable)
@@ -204,6 +224,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
               <Bluetooth className="size-4" /> Bluetooth
             </Button>
           </div>
+          )}
           <Button
             variant="secondary"
             className="w-full"
@@ -228,8 +249,48 @@ export function Receipt({ open, onClose, venta, items }: Props) {
         </p>
       </div>
 
+      {/* Selector del documento a entregar (solo con facturacion activa) */}
+      {puedeComprobante && (
+        <div className="mb-4">
+          <p className="label mb-1.5">Documento a entregar</p>
+          <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Documento a entregar">
+            {(
+              [
+                { id: 'nota', label: 'Nota de venta' },
+                { id: 'boleta', label: 'Boleta' },
+                { id: 'factura', label: 'Factura' },
+              ] as const
+            ).map((o) => {
+              const deshabilitado =
+                (tipoFijado !== null && o.id !== tipoFijado) ||
+                (o.id === 'factura' && venta.metodo === 'fiado')
+              const elegido = modoActivo === o.id
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={elegido}
+                  disabled={deshabilitado}
+                  onClick={() => setModo(o.id)}
+                  className={cx(
+                    'rounded-lg border px-2 py-2 text-sm font-semibold leading-tight transition disabled:cursor-not-allowed disabled:opacity-40',
+                    elegido ? 'border-accent-600 bg-accent-50 text-accent-700' : 'border-ink-200 text-ink-600',
+                  )}
+                >
+                  {o.label}
+                </button>
+              )
+            })}
+          </div>
+          {venta.metodo === 'fiado' && tipoFijado === null && (
+            <p className="mt-1 text-xs text-ink-400">La factura no está disponible en ventas al fiado.</p>
+          )}
+        </div>
+      )}
+
       {/* Nombre del cliente (opcional) para la nota de venta */}
-      {nombreEditable && (
+      {nombreEditable && modoActivo === 'nota' && (
         <div className="mb-4">
           <label htmlFor="nombre-cliente-nota" className="label mb-1 flex items-center gap-1.5">
             <User className="size-3.5" /> Nombre del cliente (opcional)
@@ -255,12 +316,25 @@ export function Receipt({ open, onClose, venta, items }: Props) {
         </div>
       )}
 
-      {/* Boleta / factura electronica (solo si esta activada en Configuracion) */}
-      <ComprobanteElectronico venta={{ ...venta, cliente_nombre: clienteFinal }} />
+      {/* Boleta / factura: solo su formulario (sin la nota de venta) */}
+      {modoActivo !== 'nota' && (
+        <ComprobanteElectronico
+          venta={{ ...venta, cliente_nombre: clienteFinal }}
+          tipo={modoActivo}
+          onComprobante={alComprobante}
+        />
+      )}
 
-      {/* Vista previa */}
-      {/* Mismo formato que el ticket impreso (utils/ticket.ts): todo en negro
-          y negrita, sin grises tenues. */}
+      {/* Venta offline con facturacion activa: aviso de que la boleta/factura
+          se podra emitir desde Ventas cuando se sincronice. */}
+      {facturacionActiva === true && venta.numero <= 0 && !venta.anulada && (
+        <ComprobanteElectronico venta={{ ...venta, cliente_nombre: clienteFinal }} />
+      )}
+
+      {/* Vista previa de la nota de venta (solo en modo Nota de venta) */}
+      {modoActivo === 'nota' && (
+      /* Mismo formato que el ticket impreso (utils/ticket.ts): todo en negro
+          y negrita, sin grises tenues. */
       <div className="rounded-xl border border-dashed border-ink-300 bg-white p-4 font-sans text-sm font-semibold leading-snug text-black">
         {/* Cabecera */}
         <div className="mb-2 text-center">
@@ -329,6 +403,7 @@ export function Receipt({ open, onClose, venta, items }: Props) {
           ))}
         </div>
       </div>
+      )}
     </Sheet>
   )
 }
