@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Banknote, Smartphone, HandCoins, Check, Search, ArrowLeftRight, UserPlus } from 'lucide-react'
+import { useEffect, useMemo, useState, type ComponentType } from 'react'
+import { HandCoins, Check, Search, ArrowLeftRight, UserPlus } from 'lucide-react'
+import { IconoEfectivo, IconoYape } from '@/components/ui/IconosPago'
 import { Sheet } from '@/components/ui/Sheet'
 import { Button } from '@/components/ui/Button'
 import { money, cx } from '@/utils/format'
@@ -35,9 +36,9 @@ interface Props {
   offline?: boolean
 }
 
-const METODOS: { id: MetodoPago; label: string; icon: typeof Banknote; desc: string }[] = [
-  { id: 'efectivo', label: 'Efectivo', icon: Banknote, desc: 'Pago con billetes/monedas' },
-  { id: 'yape', label: 'Yape', icon: Smartphone, desc: 'Transferencia instantánea' },
+const METODOS: { id: MetodoPago; label: string; icon: ComponentType<{ className?: string }>; desc: string }[] = [
+  { id: 'efectivo', label: 'Efectivo', icon: IconoEfectivo, desc: 'Pago con billetes/monedas' },
+  { id: 'yape', label: 'Yape', icon: IconoYape, desc: 'Transferencia instantánea' },
   { id: 'fiado', label: 'Fiado', icon: HandCoins, desc: 'Apuntar a cuenta del cliente' },
   { id: 'mixto', label: 'Mixto', icon: ArrowLeftRight, desc: 'Parte en efectivo, parte en Yape' },
 ]
@@ -254,7 +255,7 @@ export function PaymentModal({
                     : 'border-ink-200 text-ink-500 hover:border-ink-300',
                 )}
               >
-                <Icon className="size-5" />
+                <Icon className="size-7" />
                 {label}
               </button>
             ))}
@@ -405,7 +406,7 @@ export function PaymentModal({
         {/* Panel: Yape */}
         {metodo === 'yape' && (
           <div className="animate-fade-up rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
-            <Smartphone className="mb-1 size-4 text-blue-500" />
+            <IconoYape className="mb-1.5 size-6" />
             <p className="font-semibold">Pago con Yape por {money(total)}</p>
             <p className="mt-0.5 text-xs text-blue-500">
               Confirma que el cliente haya completado la transferencia antes de procesar.

@@ -129,6 +129,12 @@ export function POS() {
   const [carritoMovil, setCarritoMovil] = useState(false)
   const [pagoAbierto, setPagoAbierto] = useState(false)
   const [procesando, setProcesando] = useState(false)
+  // Clave del ultimo cobro que NO se confirmo (error de red, etc.). Si el
+  // cajero reintenta el MISMO carrito, se reutiliza la misma clave: si el
+  // primer intento si llego al servidor, este devuelve esa venta en vez de
+  // registrarla dos veces (fiado y mixto no pasan a la cola sin conexion, se
+  // reintentan a mano).
+  const intentoCobroRef = useRef<{ firma: string; clave: string } | null>(null)
 
   // 1b) Mantiene el carrito al dia con los productos vigentes: si mientras se
   //     arma una venta el administrador cambia un precio, o se vende stock en
@@ -286,8 +292,18 @@ export function POS() {
   // sin llamar al servidor todavia) e imprime el ticket con el carrito ya
   // conocido — el cajero puede seguir cobrando como si nada. El numero de
   // comprobante definitivo lo asigna el servidor recien al sincronizar.
-  async function encolarOffline(metodo: 'efectivo' | 'yape', pagoRecibido: number) {
-    const clientId = crypto.randomUUID()
+  //
+  // `clientId` es la clave unica de la venta. Si el cobro ya se intento en
+  // linea, se pasa LA MISMA clave que se envio entonces: si el servidor SI
+  // alcanzo a registrar la venta (se corto el internet justo despues), al
+  // sincronizar devuelve esa misma venta en vez de registrarla otra vez
+  // (antes se generaba una clave nueva y la venta quedaba DUPLICADA: stock
+  // descontado dos veces y la caja esperando el doble).
+  async function encolarOffline(
+    metodo: 'efectivo' | 'yape',
+    pagoRecibido: number,
+    clientId: string = crypto.randomUUID(),
+  ) {
     const pendiente: VentaOffline = {
       clientId,
       creadoEnLocal: new Date().toISOString(),
@@ -341,7 +357,20 @@ export function POS() {
   // encolarOffline le habia aplicado a la caja en pantalla — de lo
   // contrario, el total mostrado quedaria contando para siempre una venta
   // que en realidad nunca se registro en el servidor.
+  //
+  // Se pide confirmacion: si los productos ya se entregaron, descartar deja el
+  // inventario con MAS stock del real (la venta nunca se descuenta).
   async function descartarPendienteOffline(p: VentaOffline) {
+    const productos = p.itemsCarrito
+      .map((i) => `• ${cantidad(i.cantidad)} x ${i.producto.nombre}`)
+      .slice(0, 8)
+      .join('\n')
+    const ok = window.confirm(
+      `¿Descartar esta venta de ${money(p.totales.total)}?\n\n${productos}\n\n` +
+        'NO se registrará: el stock de estos productos no se descontará y el monto sale de la caja.\n' +
+        'Si los productos YA se entregaron al cliente, mejor corrige el stock y toca "Reintentar".',
+    )
+    if (!ok) return
     if (p.cajaId) aplicarVentaLocal(p.cajaId, p.metodo, -p.totales.total)
     await ventasOffline.descartar(p.clientId)
   }
@@ -379,6 +408,18 @@ export function POS() {
     }
 
     setProcesando(true)
+    // Clave unica de ESTE cobro (ver encolarOffline): el servidor la usa para
+    // no registrar dos veces la misma venta. Un reintento del mismo carrito
+    // (mismos productos, metodo, descuento y cliente) conserva la clave.
+    const firmaCobro = JSON.stringify({
+      items: carrito.items.map((i) => [i.producto.id, i.cantidad, i.modalidad]),
+      metodo,
+      descuento: carrito.descuento,
+      cliente: clienteId ?? null,
+    })
+    const claveVenta =
+      intentoCobroRef.current?.firma === firmaCobro ? intentoCobroRef.current.clave : crypto.randomUUID()
+    intentoCobroRef.current = { firma: firmaCobro, clave: claveVenta }
     try {
       const items = carrito.items.map((i) => ({
         producto_id: i.producto.id,
@@ -396,12 +437,15 @@ export function POS() {
         p_pago_recibido: pagoRecibido,
         p_caja_id: caja?.id ?? null,
         p_cliente_id: clienteId ?? null,
+        p_idempotency_key: claveVenta,
         // Solo en pago mixto: si se enviara siempre (aunque sea null), un
         // servidor que aun no tenga la migracion de pagos mixtos rechazaria
         // TODAS las ventas por no conocer el parametro.
         ...(metodo === 'mixto' && pagos ? { p_pagos: pagos } : {}),
       })
       if (error) throw error
+      // Cobro confirmado: el proximo cobro usara una clave nueva.
+      intentoCobroRef.current = null
       // La venta YA quedo registrada en el servidor: se borra el carrito guardado
       // de inmediato (no al final). Si la pagina se recargara justo aqui, lo
       // contrario restauraria estos mismos productos y se podria cobrar dos veces.
@@ -489,7 +533,10 @@ export function POS() {
       // efectivo/yape cuando se cumple esta condicion.
       if ((metodo === 'efectivo' || metodo === 'yape') && pareceErrorDeRed(e)) {
         try {
-          await encolarOffline(metodo, pagoRecibido)
+          // MISMA clave del intento en linea: si el servidor alcanzo a
+          // registrarla, la sincronizacion no la duplica.
+          await encolarOffline(metodo, pagoRecibido, claveVenta)
+          intentoCobroRef.current = null
         } catch (e2) {
           toast.error(e2 instanceof Error ? e2.message : 'No se pudo guardar la venta sin conexión')
         }

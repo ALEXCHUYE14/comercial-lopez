@@ -1890,7 +1890,18 @@ $$;
 alter table public.ventas add column if not exists anulada_por uuid;
 alter table public.ventas add column if not exists anulada_en  timestamptz;
 
-create or replace function public.anular_venta(p_venta_id uuid)
+alter table public.ventas add column if not exists anulada_motivo     text;
+alter table public.ventas add column if not exists anulada_por_nombre text;
+-- Motivo obligatorio (v2): se elimina la firma vieja para no dejar dos
+-- versiones ambiguas (ver supabase/anulacion_motivo.sql).
+drop function if exists public.anular_venta(uuid);
+create or replace function public.anular_venta(
+  p_venta_id uuid,
+  -- Obligatorio (minimo 5 caracteres). Tiene default solo para que una
+  -- version vieja de la app reciba un mensaje claro en vez de "funcion no
+  -- encontrada".
+  p_motivo   text default null
+)
 returns public.ventas
 language plpgsql
 security definer set search_path = public
@@ -1903,11 +1914,22 @@ declare
   v_nombre  text;
   v_admin   boolean;
   v_pg      record;
+  v_motivo  text;
 begin
   if auth.uid() is null then
     raise exception 'Sesion no valida.';
   end if;
   v_admin := public.es_admin();
+
+  -- Motivo obligatorio: queda en el historial para la auditoria.
+  v_motivo := nullif(btrim(regexp_replace(
+    regexp_replace(coalesce(p_motivo, ''), '[[:cntrl:]]', ' ', 'g'), '[[:space:]]+', ' ', 'g')), '');
+  if v_motivo is null or char_length(v_motivo) < 5 then
+    raise exception 'Indica el motivo de la anulacion (minimo 5 caracteres). Si no ves el campo, recarga la app.';
+  end if;
+  if char_length(v_motivo) > 200 then
+    raise exception 'El motivo es demasiado largo (maximo 200 caracteres).';
+  end if;
 
   select * into v_venta from public.ventas where id = p_venta_id for update;
   if not found then raise exception 'Venta no encontrada.'; end if;
@@ -1990,7 +2012,8 @@ begin
   end if;
 
   update public.ventas
-    set anulada = true, anulada_por = auth.uid(), anulada_en = now()
+    set anulada = true, anulada_por = auth.uid(), anulada_en = now(),
+        anulada_por_nombre = v_nombre, anulada_motivo = v_motivo
     where id = p_venta_id
     returning * into v_venta;
 

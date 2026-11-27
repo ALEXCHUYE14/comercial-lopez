@@ -119,6 +119,9 @@ export type Venta = {
   /** Auditoría de la anulación (ver RPC anular_venta). Opcionales: ausentes en
    * ventas anteriores a esta función y en la venta sintética del modo offline. */
   anulada_por?: string | null
+  /** Nombre de quien anulo y motivo (obligatorio desde supabase/anulacion_motivo.sql). */
+  anulada_por_nombre?: string | null
+  anulada_motivo?: string | null
   /** Última corrección de la venta (cambio de productos, ver RPC modificar_venta). */
   modificada_por?: string | null
   modificada_en?: string | null
@@ -481,7 +484,7 @@ export interface Database {
         Args: { p_caja_id: string; p_metodo: string; p_monto: number }
         Returns: void
       }
-      anular_venta: { Args: { p_venta_id: string }; Returns: Venta }
+      anular_venta: { Args: { p_venta_id: string; p_motivo: string }; Returns: Venta }
       modificar_venta: {
         Args: { p_venta_id: string; p_items: unknown; p_pagos?: unknown; p_motivo?: string | null }
         Returns: Venta

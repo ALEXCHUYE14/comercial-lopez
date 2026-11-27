@@ -1,10 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ComponentType } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  DollarSign,
   Lock,
   LockOpen,
-  Smartphone,
   HandCoins,
   CheckCircle2,
   AlertTriangle,
@@ -21,6 +19,7 @@ import {
   Wallet,
   ChevronDown,
 } from 'lucide-react'
+import { IconoEfectivo, IconoYape } from '@/components/ui/IconosPago'
 import { supabase } from '@/lib/supabase'
 import { useCajaCtx } from '@/context/CajaContext'
 import { useAuth } from '@/context/AuthContext'
@@ -460,14 +459,14 @@ export function Caja() {
           </div>
 
           <KpiCaja
-            icon={DollarSign}
+            icon={IconoEfectivo}
             label="Ventas efectivo"
             valor={money(toNum(caja.total_efectivo))}
             color="text-accent-700"
             bg="bg-accent-50"
           />
           <KpiCaja
-            icon={Smartphone}
+            icon={IconoYape}
             label="Ventas Yape"
             valor={money(toNum(caja.total_yape))}
             color="text-blue-700"
@@ -1108,7 +1107,7 @@ export function Caja() {
 // ─── Subcomponentes ────────────────────────────────────────────────────────────
 
 function KpiCaja({ icon: Icon, label, valor, color, bg, className = '' }: {
-  icon: typeof DollarSign; label: string; valor: string; color: string; bg: string; className?: string
+  icon: ComponentType<{ className?: string }>; label: string; valor: string; color: string; bg: string; className?: string
 }) {
   return (
     <div className={cx('card p-4', className)}>

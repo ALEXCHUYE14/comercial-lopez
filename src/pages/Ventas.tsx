@@ -709,6 +709,9 @@ function TicketReprint({
   const [detalle, setDetalle] = useState<DetalleVenta[]>([])
   const [cargando, setCargando] = useState(false)
   const [anulando, setAnulando] = useState(false)
+  // Formulario de anulacion: el motivo es obligatorio (queda en Auditoria).
+  const [pidiendoMotivo, setPidiendoMotivo] = useState(false)
+  const [motivoAnulacion, setMotivoAnulacion] = useState('')
   const [editando, setEditando] = useState(false)
   const [imprimiendoBt, setImprimiendoBt] = useState(false)
   // Comprobante electronico vigente: la venta ya no se puede anular ni
@@ -717,6 +720,8 @@ function TicketReprint({
 
   useEffect(() => {
     setConComprobante(false)
+    setPidiendoMotivo(false)
+    setMotivoAnulacion('')
     if (!venta) return
     setCargando(true)
     supabase
@@ -729,20 +734,25 @@ function TicketReprint({
       })
   }, [venta])
 
+  const motivoLimpio = motivoAnulacion.replace(/\s+/g, ' ').trim()
+  const motivoValido = motivoLimpio.length >= 5
+
   async function anular() {
-    if (!venta) return
-    const ok = window.confirm(
-      `Anular el comprobante #${venta.numero}? Se devolvera el stock vendido y se restara de la caja (o de la deuda del cliente, si fue al fiado).`,
-    )
-    if (!ok) return
+    if (!venta || anulando) return
+    if (!motivoValido) {
+      toast.error('Escribe el motivo de la anulación (mínimo 5 caracteres).')
+      return
+    }
     setAnulando(true)
-    const { error } = await supabase.rpc('anular_venta', { p_venta_id: venta.id })
+    const { error } = await supabase.rpc('anular_venta', { p_venta_id: venta.id, p_motivo: motivoLimpio })
     setAnulando(false)
     if (error) {
       toast.error(error.message || 'No se pudo anular la venta')
       return
     }
     toast.exito(`Comprobante #${venta.numero} anulado`)
+    setPidiendoMotivo(false)
+    setMotivoAnulacion('')
     onAnulada()
   }
 
@@ -857,7 +867,7 @@ function TicketReprint({
               </Button>
             )}
             {puedeAnular && !venta.anulada && !conComprobante && (
-              <Button variant="danger" className="flex-1" onClick={anular} loading={anulando}>
+              <Button variant="danger" className="flex-1" onClick={() => setPidiendoMotivo(true)}>
                 <Ban className="size-4" /> Anular
               </Button>
             )}
@@ -882,6 +892,63 @@ function TicketReprint({
         venta={venta}
         onComprobante={(c) => setConComprobante(!!c && c.estado !== 'rechazado')}
       />
+
+      {pidiendoMotivo && !venta.anulada && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3">
+          <p className="text-sm font-semibold text-red-800">Anular la venta #{venta.numero}</p>
+          <p className="mt-0.5 text-xs text-red-700">
+            Se devolverá el stock vendido y se restará de la caja (o de la deuda del cliente, si fue al fiado).
+            El motivo queda registrado en Auditoría.
+          </p>
+          <label htmlFor="motivo-anulacion" className="label mb-1 mt-2 block">
+            Motivo (obligatorio)
+          </label>
+          <textarea
+            id="motivo-anulacion"
+            className="input min-h-[72px] text-base sm:text-sm"
+            maxLength={200}
+            autoFocus
+            placeholder="Ej. el cliente devolvió el producto, se cobró por error…"
+            value={motivoAnulacion}
+            onChange={(e) => setMotivoAnulacion(e.target.value)}
+          />
+          <div className="mt-2 flex gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="flex-1"
+              disabled={anulando}
+              onClick={() => {
+                setPidiendoMotivo(false)
+                setMotivoAnulacion('')
+              }}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              className="flex-1"
+              loading={anulando}
+              disabled={!motivoValido}
+              onClick={anular}
+            >
+              <Ban className="size-4" /> Confirmar anulación
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {venta.anulada && (venta.anulada_motivo || venta.anulada_por_nombre) && (
+        <div className="mb-4 rounded-xl bg-ink-50 p-3 text-xs text-ink-600">
+          <p>
+            <strong>Anulada</strong>
+            {venta.anulada_por_nombre ? ` por ${venta.anulada_por_nombre}` : ''}
+            {venta.anulada_en ? ` el ${fechaHora(venta.anulada_en)}` : ''}
+          </p>
+          {venta.anulada_motivo && <p className="mt-0.5 break-words">Motivo: {venta.anulada_motivo}</p>}
+        </div>
+      )}
 
       {editando && (
         <CambiarProductoVenta

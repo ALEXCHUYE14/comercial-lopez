@@ -9,6 +9,7 @@ import {
   CheckCheck,
   Filter,
   TrendingDown,
+  Ban,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAlertasArqueo } from '@/hooks/useAlertasArqueo'
@@ -52,6 +53,13 @@ interface RankingCajero {
   transacciones: number
 }
 
+interface AnulacionesCajero {
+  clave: string
+  cajero_nombre: string
+  cantidad: number
+  monto: number
+}
+
 interface DescuadreCajero {
   cajero_id: string | null
   cajero_nombre: string
@@ -71,6 +79,7 @@ export function AuditoriaCajeros() {
   const [hasta, setHasta] = useState(ymd(finHoy()))
   const [ventas, setVentas] = useState<Venta[]>([])
   const [cajasCerradas, setCajasCerradas] = useState<CajaRegistro[]>([])
+  const [anuladas, setAnuladas] = useState<Venta[]>([])
   const [cargando, setCargando] = useState(true)
   const [marcandoId, setMarcandoId] = useState<string | null>(null)
   const [soloNoLeidas, setSoloNoLeidas] = useState(true)
@@ -84,7 +93,7 @@ export function AuditoriaCajeros() {
       // Paginado: Supabase entrega maximo 1000 filas por consulta; con mas
       // ventas en el periodo el ranking y los totales salian incompletos.
       try {
-        const [ventasData, cajasData] = await Promise.all([
+        const [ventasData, cajasData, anuladasData] = await Promise.all([
           traerTodas<Venta>((ini, fin) =>
             supabase
               .from('ventas')
@@ -107,10 +116,26 @@ export function AuditoriaCajeros() {
               .order('id')
               .range(ini, fin),
           ),
+          // Ventas ANULADAS en el periodo (por fecha de anulacion; las
+          // anuladas antes de registrarse esa fecha, por fecha de venta).
+          traerTodas<Venta>((ini, fin) =>
+            supabase
+              .from('ventas')
+              .select('*')
+              .eq('anulada', true)
+              .or(
+                `and(anulada_en.gte.${desdeIso},anulada_en.lte.${hastaIso}),` +
+                  `and(anulada_en.is.null,creado_en.gte.${desdeIso},creado_en.lte.${hastaIso})`,
+              )
+              .order('creado_en', { ascending: false })
+              .order('id')
+              .range(ini, fin),
+          ).catch(() => [] as Venta[]),
         ])
         if (!activo) return
         setVentas(ventasData)
         setCajasCerradas(cajasData)
+        setAnuladas(anuladasData)
       } catch {
         // sin conexion: se conserva lo que ya se mostraba
       } finally {
@@ -170,6 +195,24 @@ export function AuditoriaCajeros() {
     )
   }, [cajasCerradas])
 
+  // ── Anulaciones por cajero que hizo la venta ────────────────────────────────
+  const anulacionesPorCajero = useMemo<AnulacionesCajero[]>(() => {
+    const mapa = new Map<string, AnulacionesCajero>()
+    anuladas.forEach((v) => {
+      const clave = v.cajero_id ?? v.cajero_nombre ?? 'sin-asignar'
+      const actual = mapa.get(clave) ?? {
+        clave,
+        cajero_nombre: v.cajero_nombre ?? 'Sin asignar',
+        cantidad: 0,
+        monto: 0,
+      }
+      actual.cantidad += 1
+      actual.monto += toNum(v.total)
+      mapa.set(clave, actual)
+    })
+    return [...mapa.values()].sort((a, b) => b.cantidad - a.cantidad || b.monto - a.monto)
+  }, [anuladas])
+
   const alertasFiltradas = useMemo(
     () => (soloNoLeidas ? alertas.filter((a) => !a.leida) : alertas),
     [alertas, soloNoLeidas],
@@ -209,6 +252,19 @@ export function AuditoriaCajeros() {
         d.criticos,
         d.sumaDiferencias.toFixed(2),
         d.peorFaltante.toFixed(2),
+      ]),
+      [],
+      ['Ventas anuladas'],
+      ['Fecha venta', 'Fecha anulación', 'N° venta', 'Vendió', 'Anuló', 'Motivo', 'Método', 'Total'],
+      ...anuladas.map((v) => [
+        fechaHora(v.creado_en),
+        v.anulada_en ? fechaHora(v.anulada_en) : '',
+        v.numero,
+        v.cajero_nombre ?? '',
+        v.anulada_por_nombre ?? '',
+        v.anulada_motivo ?? '',
+        v.metodo,
+        toNum(v.total).toFixed(2),
       ]),
     ]
     descargarCSV(`auditoria-cajeros_${desde}_a_${hasta}.csv`, filas)
@@ -439,6 +495,58 @@ export function AuditoriaCajeros() {
           )}
         </Card>
       </div>
+
+      {/* Ventas anuladas (motivo y quién anuló) */}
+      <Card className="overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-3">
+          <h2 className="flex items-center gap-2 font-display font-bold text-ink-900">
+            <Ban className="size-[18px]" /> Ventas anuladas
+            {anuladas.length > 0 && <Badge tone="warning">{anuladas.length}</Badge>}
+          </h2>
+          <p className="text-xs text-ink-400">Al anular, el stock vuelve al inventario y se resta de la caja.</p>
+        </div>
+        {cargando ? (
+          <div className="grid place-items-center py-10">
+            <Spinner className="size-5 text-ink-400" />
+          </div>
+        ) : anuladas.length === 0 ? (
+          <div className="grid place-items-center py-10 text-center text-ink-300">
+            <ShieldCheck className="mb-2 size-7" />
+            <p className="text-sm font-medium text-ink-500">Sin anulaciones en el período</p>
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2 border-b border-ink-100 px-4 py-3">
+              {anulacionesPorCajero.map((a) => (
+                <span key={a.clave} className="rounded-lg bg-ink-50 px-2.5 py-1.5 text-xs text-ink-700">
+                  <strong>{a.cajero_nombre}</strong>: {a.cantidad} anulación{a.cantidad === 1 ? '' : 'es'} ·{' '}
+                  {money(a.monto)}
+                </span>
+              ))}
+            </div>
+            <ul className="max-h-[420px] divide-y divide-ink-100 overflow-y-auto">
+              {anuladas.slice(0, 200).map((v) => (
+                <li key={v.id} className="flex items-start justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-ink-900">
+                      Venta #{v.numero} · {v.cajero_nombre ?? 'Sin asignar'}
+                    </p>
+                    <p className="text-xs text-ink-400">
+                      Vendida {fechaHora(v.creado_en)}
+                      {v.anulada_en ? ` · anulada ${fechaHora(v.anulada_en)}` : ''}
+                      {v.anulada_por_nombre ? ` por ${v.anulada_por_nombre}` : ''}
+                    </p>
+                    <p className={cx('mt-0.5 break-words text-xs', v.anulada_motivo ? 'text-ink-600' : 'text-ink-300')}>
+                      {v.anulada_motivo ? `Motivo: ${v.anulada_motivo}` : 'Sin motivo registrado (anulación anterior a este control)'}
+                    </p>
+                  </div>
+                  <span className="tabular shrink-0 text-sm font-bold text-ink-900">{money(toNum(v.total))}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </Card>
     </div>
   )
 }

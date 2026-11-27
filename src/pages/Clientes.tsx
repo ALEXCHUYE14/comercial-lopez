@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ComponentType } from 'react'
 import {
   Plus,
   User,
@@ -12,8 +12,6 @@ import {
   MessageCircle,
   Copy,
   AlertTriangle,
-  Banknote,
-  Smartphone,
   Download,
   Upload,
 } from 'lucide-react'
@@ -25,15 +23,16 @@ import { useCajaCtx } from '@/context/CajaContext'
 import { getNegocio } from '@/config/negocio'
 import { Button, Card, Badge } from '@/components/ui/Button'
 import { Sheet } from '@/components/ui/Sheet'
+import { IconoEfectivo, IconoYape } from '@/components/ui/IconosPago'
 import { useToast } from '@/components/ui/Toast'
 import { money, fechaHora, cx } from '@/utils/format'
 import type { ClienteCredito, MetodoAbono, PagoCredito } from '@/types/database'
 
 const VACIO = { nombre: '', telefono: '', direccion: '', limite_credito: '100' }
 
-const METODOS_ABONO: { id: MetodoAbono; label: string; icon: typeof Banknote }[] = [
-  { id: 'efectivo', label: 'Efectivo', icon: Banknote },
-  { id: 'yape', label: 'Yape', icon: Smartphone },
+const METODOS_ABONO: { id: MetodoAbono; label: string; icon: ComponentType<{ className?: string }> }[] = [
+  { id: 'efectivo', label: 'Efectivo', icon: IconoEfectivo },
+  { id: 'yape', label: 'Yape', icon: IconoYape },
 ]
 
 export function Clientes() {
@@ -538,7 +537,7 @@ export function Clientes() {
                         : 'border-ink-200 text-ink-500 hover:border-ink-300',
                     )}
                   >
-                    <Icon className="size-5" />
+                    <Icon className="size-7" />
                     {label}
                   </button>
                 ))}
